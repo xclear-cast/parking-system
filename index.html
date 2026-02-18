@@ -45,7 +45,8 @@
             "react": "https://esm.sh/react@18.2.0",
             "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
             "lucide-react": "https://esm.sh/lucide-react@0.263.1?deps=react@18.2.0",
-            "jszip": "https://esm.sh/jszip@3.10.1"
+            "jszip": "https://esm.sh/jszip@3.10.1",
+            "jspdf": "https://esm.sh/jspdf@2.5.1"
         }
     }
     </script>
@@ -81,8 +82,9 @@
     <script type="text/babel" data-type="module">
         import React, { useState, useEffect, useRef, useMemo } from 'react';
         import { createRoot } from 'react-dom/client';
-        import { Car, FileText, ArrowLeft, Plus, Trash2, ShieldCheck, X, Download, Filter, AlertCircle, Search, Clock, Lock, ChevronRight, Eye, UploadCloud, CheckCircle, Bell, UserCheck, BadgeCheck, PenTool, RotateCw, Archive, Briefcase } from 'lucide-react';
+        import { Car, FileText, ArrowLeft, Trash2, ShieldCheck, X, Download, AlertCircle, Search, Clock, Lock, ChevronRight, UploadCloud, CheckCircle, Bell, UserCheck, BadgeCheck, PenTool, RotateCw, Archive, Briefcase } from 'lucide-react';
         import JSZip from 'jszip';
+        import { jsPDF } from 'jspdf';
 
         const LOCAL_STORAGE_KEY = 'parking_submissions_full_v3';
         
@@ -409,13 +411,13 @@
 
             const renderView = () => {
                 switch (currentView) {
-                    case 'home': return <HomeScreen onNavigate={setCurrentView} adminRole={adminRole} setAdminRole={setAdminRole} onOpenAdmin={() => setShowAdminLogin(true)} />;
+                    case 'home': return <HomeScreen onNavigate={setCurrentView} adminRole={adminRole} onOpenAdmin={() => setShowAdminLogin(true)} />;
                     case 'construction': return <ConstructionForm onBack={() => setCurrentView('home')} userRole={adminRole} onSubmit={(data) => {
                         const check = checkTimeOverlap(data, 'construction');
                         if (check.isOverlap) { alert(`[중복] 차량 ${check.car}는 이미 등록되어 있습니다.`); return { ok: false }; }
                         return handleSave('construction', data, false);
                     }} />;
-                    case 'regular': return <RegularTicketForm onBack={() => setCurrentView('home')} userRole={adminRole} onSubmit={(data) => {
+                    case 'regular': return <RegularTicketForm onBack={() => setCurrentView('home')} onSubmit={(data) => {
                         if (data.applicationType !== 'change') {
                             const check = checkTimeOverlap({...data, startDate: new Date().toISOString().split('T')[0], endDate: '2099-12-31'}, 'regular');
                             if (check.isOverlap) { alert(`[중복] 차량 ${check.car}는 이미 등록되어 있습니다.`); return { ok: false }; }
@@ -423,7 +425,7 @@
                         return handleSave('regular', data, false);
                     }} />;
                     case 'edit_construction': return <ConstructionForm onBack={() => setCurrentView('statusCheck')} userRole={adminRole} initialData={editingItem} onSubmit={(data) => handleSave('construction', data, true, editingItem.id)} />;
-                    case 'edit_regular': return <RegularTicketForm onBack={() => setCurrentView('statusCheck')} userRole={adminRole} initialData={editingItem} onSubmit={(data) => handleSave('regular', data, true, editingItem.id)} />;
+                    case 'edit_regular': return <RegularTicketForm onBack={() => setCurrentView('statusCheck')} initialData={editingItem} onSubmit={(data) => handleSave('regular', data, true, editingItem.id)} />;
                     case 'statusCheck': return <StatusCheckScreen onBack={() => setCurrentView('home')} submissions={submissions} onEdit={(item)=>{ setEditingItem(item); setCurrentView(item.type==='construction'?'edit_construction':'edit_regular'); }} />;
                     case 'admin': return <AdminDashboard onBack={() => setCurrentView('home')} submissions={submissions} onUpdateStatus={updateStatus} onDeleteSubmissions={deleteSubmissions} adminRole={adminRole} />;
                     case 'success': return <SuccessScreen type={lastSubmissionType} onHome={() => setCurrentView('home')} />;
@@ -506,6 +508,7 @@
         function AdminDashboard({ onBack, submissions, onUpdateStatus, onDeleteSubmissions, adminRole }) {
             const getInitialTab = () => {
                 if (adminRole === 'SAFETY') return 'construction';
+                if (adminRole === 'CENTER') return 'regular';
                 return 'construction'; 
             };
 
@@ -528,15 +531,31 @@
             const [viewImage, setViewImage] = useState(null);
             const [viewImageTitle, setViewImageTitle] = useState('');
             const [selectedIds, setSelectedIds] = useState(new Set()); 
+            const pdfFontBase64Ref = useRef(null);
             const [checkingItem, setCheckingItem] = useState(null);
             const [firstCheckerName, setFirstCheckerName] = useState('');
             const [firstCheckerSignature, setFirstCheckerSignature] = useState(null);
+            const yearOptions = useMemo(() => {
+                const currentYear = new Date().getFullYear();
+                const years = new Set([currentYear]);
+                [...(submissions.construction || []), ...(submissions.regular || [])].forEach(item => {
+                    const d = new Date(item.submittedAt);
+                    if (!Number.isNaN(d.getTime())) years.add(d.getFullYear());
+                });
+                return Array.from(years).sort((a, b) => b - a);
+            }, [submissions]);
 
-            const yearOptions = Array.from({length: 5}, (_, i) => 2026 + i);
+            useEffect(() => {
+                if (yearOptions.length === 0) return;
+                if (!yearOptions.includes(Number(filterYear))) {
+                    setFilterYear(yearOptions[0]);
+                }
+            }, [yearOptions, filterYear]);
 
             useEffect(() => {
                 if (adminRole === 'SAFETY') setActiveTab('construction');
-                if (adminRole === 'CENTER' && activeTab !== 'regular' && activeTab !== 'construction') setActiveTab('regular');
+                if (adminRole === 'CENTER') setActiveTab('regular');
+                if (adminRole === 'MASTER') setActiveTab('construction');
             }, [adminRole]);
 
             const list = submissions[activeTab] || [];
@@ -612,6 +631,170 @@
                 window.XLSX.writeFile(wb, `주차관리_${activeTab}_${new Date().toISOString().slice(0,10)}.xlsx`);
             };
 
+            const sanitizeFileName = (value) => (value || '')
+                .toString()
+                .replace(/[\\/:*?"<>|]/g, '_')
+                .replace(/\s+/g, ' ')
+                .trim();
+
+            const formatDateTimeForDoc = (value) => {
+                if (!value) return '-';
+                const d = new Date(value);
+                if (Number.isNaN(d.getTime())) return '-';
+                return d.toLocaleString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+            };
+
+            const arrayBufferToBase64 = (buffer) => {
+                let binary = '';
+                const bytes = new Uint8Array(buffer);
+                const chunkSize = 0x8000;
+                for (let i = 0; i < bytes.length; i += chunkSize) {
+                    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+                }
+                return btoa(binary);
+            };
+
+            const ensurePdfFont = async (pdf) => {
+                const fontFile = 'NanumGothic-Regular.ttf';
+                const fontName = 'NanumGothic';
+                try {
+                    if (!pdfFontBase64Ref.current) {
+                        const res = await fetch('https://raw.githubusercontent.com/googlefonts/nanumgothic/master/fonts/ttf/NanumGothic-Regular.ttf');
+                        if (!res.ok) throw new Error('font fetch failed');
+                        const buf = await res.arrayBuffer();
+                        pdfFontBase64Ref.current = arrayBufferToBase64(buf);
+                    }
+                    pdf.addFileToVFS(fontFile, pdfFontBase64Ref.current);
+                    pdf.addFont(fontFile, fontName, 'normal');
+                    pdf.setFont(fontName, 'normal');
+                    return true;
+                } catch {
+                    return false;
+                }
+            };
+
+            const addDataImageToPdf = (pdf, dataUrl, x, y, w, h) => {
+                if (!dataUrl || typeof dataUrl !== 'string') return false;
+                const isPng = dataUrl.startsWith('data:image/png');
+                const isJpeg = dataUrl.startsWith('data:image/jpeg') || dataUrl.startsWith('data:image/jpg');
+                const format = isPng ? 'PNG' : (isJpeg ? 'JPEG' : null);
+                if (!format) return false;
+                try {
+                    pdf.addImage(dataUrl, format, x, y, w, h, undefined, 'FAST');
+                    return true;
+                } catch {
+                    return false;
+                }
+            };
+
+            const buildApplicationPdf = async (item) => {
+                const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+                await ensurePdfFont(pdf);
+                const pageWidth = pdf.internal.pageSize.getWidth();
+                let y = 14;
+
+                pdf.setFontSize(16);
+                pdf.text('주차관리 신청서', pageWidth / 2, y, { align: 'center' });
+                y += 7;
+                pdf.setFontSize(9);
+                pdf.text(`문서번호: ${item.id || '-'}`, 14, y);
+                pdf.text(`출력일시: ${formatDateTimeForDoc(new Date().toISOString())}`, pageWidth - 14, y, { align: 'right' });
+                y += 6;
+                pdf.setDrawColor(220);
+                pdf.line(14, y, pageWidth - 14, y);
+                y += 5;
+
+                const rows = item.type === 'construction'
+                    ? [
+                        ['구분', '공사/방문차량'],
+                        ['상태', getStatusLabel(item.status)],
+                        ['신청일시', formatDateTimeForDoc(item.submittedAt)],
+                        ['업체명', item.companyName],
+                        ['방문자 성명', item.visitorName],
+                        ['방문 목적', item.visitPurpose],
+                        ['방문 호수', item.visitUnit ? `${item.visitUnit}호` : '-'],
+                        ['방문 내용', item.location],
+                        ['연락처', item.driverPhone],
+                        ['방문 기간', `${item.startDate || '-'} ${item.startTime || ''} ~ ${item.endDate || '-'} ${item.endTime || ''}`],
+                        ['차량번호', (item.vehicles || []).join(', ') || '-'],
+                        ['1차 확인자', item.firstCheckedManagerName || item.checkedBy || '-'],
+                        ['최종 승인자', item.approvedBy || '-'],
+                        ['반려 사유', item.rejectionReason || '-']
+                    ]
+                    : [
+                        ['구분', '정기권'],
+                        ['상태', getStatusLabel(item.status)],
+                        ['신청일시', formatDateTimeForDoc(item.submittedAt)],
+                        ['신청 유형', item.applicationType === 'change' ? '변경' : '신규'],
+                        ['신청자 성명', item.name],
+                        ['소속', item.department],
+                        ['연락처', item.phone],
+                        ['신청 호수', item.unitNumber ? `${item.unitNumber}호` : '-'],
+                        ['차량번호', item.carNumber],
+                        ['기존 차량번호', item.oldCarNumber || '-'],
+                        ['변경 사유', item.changeReason || '-'],
+                        ['1차 확인자', item.firstCheckedManagerName || item.checkedBy || '-'],
+                        ['최종 승인자', item.approvedBy || '-'],
+                        ['반려 사유', item.rejectionReason || '-']
+                    ];
+
+                const drawRow = (label, value) => {
+                    const text = `${value || '-'}`;
+                    const lines = pdf.splitTextToSize(text, pageWidth - 74);
+                    const height = Math.max(8, lines.length * 4 + 3);
+                    pdf.setFillColor(248, 250, 252);
+                    pdf.rect(14, y, 44, height, 'F');
+                    pdf.setDrawColor(229, 231, 235);
+                    pdf.rect(14, y, 44, height);
+                    pdf.rect(58, y, pageWidth - 72, height);
+                    pdf.setFontSize(9);
+                    pdf.text(label, 16, y + 5.5);
+                    pdf.text(lines, 60, y + 5.5);
+                    y += height;
+                };
+
+                rows.forEach(([label, value]) => drawRow(label, value));
+                y += 4;
+
+                const sigBoxH = 34;
+                if (y + sigBoxH + 4 > 285) {
+                    pdf.addPage();
+                    y = 14;
+                }
+                pdf.setDrawColor(229, 231, 235);
+                pdf.rect(14, y, 88, sigBoxH);
+                pdf.rect(pageWidth - 102, y, 88, sigBoxH);
+                pdf.setFontSize(9);
+                pdf.text('신청자 서명', 16, y + 5);
+                pdf.text('1차 확인 담당자 서명', pageWidth - 100, y + 5);
+                const hasApplicantSignature = addDataImageToPdf(pdf, item.signature, 16, y + 7, 84, 24);
+                const hasCheckerSignature = addDataImageToPdf(pdf, item.firstCheckedManagerSignature, pageWidth - 100, y + 7, 84, 24);
+                if (!hasApplicantSignature) { pdf.setFontSize(8); pdf.text('서명 없음', 16, y + 20); }
+                if (!hasCheckerSignature) { pdf.setFontSize(8); pdf.text('서명 없음', pageWidth - 100, y + 20); }
+
+                if (item.registrationImg || item.idCardImg) {
+                    pdf.addPage();
+                    let imgY = 16;
+                    pdf.setFontSize(13);
+                    pdf.text('첨부 서류', 14, imgY);
+                    imgY += 6;
+                    if (item.registrationImg) {
+                        pdf.setFontSize(9);
+                        pdf.text('차량등록증', 14, imgY);
+                        const ok = addDataImageToPdf(pdf, item.registrationImg, 14, imgY + 2, 86, 55);
+                        if (!ok) { pdf.setFontSize(8); pdf.text('이미지 로드 실패', 14, imgY + 10); }
+                    }
+                    if (item.idCardImg) {
+                        pdf.setFontSize(9);
+                        pdf.text('사원증', pageWidth - 96, imgY);
+                        const ok = addDataImageToPdf(pdf, item.idCardImg, pageWidth - 96, imgY + 2, 82, 55);
+                        if (!ok) { pdf.setFontSize(8); pdf.text('이미지 로드 실패', pageWidth - 96, imgY + 10); }
+                    }
+                }
+
+                return pdf.output('arraybuffer');
+            };
+
             const handleZipDownload = async () => {
                 if (isZipping) return;
                 const targetList = getTargetList();
@@ -620,14 +803,22 @@
                 try {
                     const zip = new JSZip();
                     const imgFolder = zip.folder("images");
-                    let imgCount = 0;
-                    targetList.forEach(item => {
-                        const prefix = `${item.name || item.companyName}_${item.carNumber || (item.vehicles ? item.vehicles[0] : '차량')}`;
-                        if (item.registrationImg) { const b64 = item.registrationImg.split(',')[1]; if(b64) { imgFolder.file(`${prefix}_등록증.jpg`, b64, {base64: true}); imgCount++; } }
-                        if (item.idCardImg) { const b64 = item.idCardImg.split(',')[1]; if(b64) { imgFolder.file(`${prefix}_사원증.jpg`, b64, {base64: true}); imgCount++; } }
-                        if (item.signature) { const b64 = item.signature.split(',')[1]; if(b64) { imgFolder.file(`${prefix}_서명.png`, b64, {base64: true}); imgCount++; } }
-                    });
-                    if (imgCount === 0) { alert("저장할 이미지가 없습니다."); setIsZipping(false); return; }
+                    const formFolder = zip.folder("forms");
+                    let fileCount = 0;
+                    for (let idx = 0; idx < targetList.length; idx++) {
+                        const item = targetList[idx];
+                        const baseName = sanitizeFileName(`${item.name || item.companyName}_${item.carNumber || (item.vehicles ? item.vehicles[0] : '차량')}`) || `신청서_${idx + 1}`;
+                        if (item.registrationImg) { const b64 = item.registrationImg.split(',')[1]; if(b64) { imgFolder.file(`${baseName}_등록증.jpg`, b64, {base64: true}); fileCount++; } }
+                        if (item.idCardImg) { const b64 = item.idCardImg.split(',')[1]; if(b64) { imgFolder.file(`${baseName}_사원증.jpg`, b64, {base64: true}); fileCount++; } }
+                        if (item.signature) { const b64 = item.signature.split(',')[1]; if(b64) { imgFolder.file(`${baseName}_서명.png`, b64, {base64: true}); fileCount++; } }
+                        if (item.firstCheckedManagerSignature) { const b64 = item.firstCheckedManagerSignature.split(',')[1]; if(b64) { imgFolder.file(`${baseName}_1차확인담당자서명.png`, b64, {base64: true}); fileCount++; } }
+                        try {
+                            const pdfBuffer = await buildApplicationPdf(item);
+                            formFolder.file(`${baseName}_신청서.pdf`, pdfBuffer);
+                            fileCount++;
+                        } catch {}
+                    }
+                    if (fileCount === 0) { alert("저장할 파일이 없습니다."); setIsZipping(false); return; }
                     const content = await zip.generateAsync({type:"blob"});
                     const url = window.URL.createObjectURL(content);
                     const a = document.createElement("a"); a.href = url; a.download = `이미지_${activeTab}_${new Date().toISOString().slice(0,10)}.zip`; a.click();
@@ -743,7 +934,7 @@
                         </div>
                         
                         <div className="grid grid-cols-3 gap-2 mb-3">
-                            <select value={filterYear} onChange={e=>setFilterYear(e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:outline-none">{yearOptions.map(y=><option key={y} value={y}>{y}년</option>)}</select>
+                            <select value={filterYear} onChange={e=>setFilterYear(Number(e.target.value))} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:outline-none">{yearOptions.map(y=><option key={y} value={y}>{y}년</option>)}</select>
                             <select value={filterMonth} onChange={e=>setFilterMonth(e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:outline-none">{[...Array(12)].map((_,i)=><option key={i+1} value={i+1}>{i+1}월</option>)}</select>
                             <select value={filterDay} onChange={e=>setFilterDay(e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:outline-none"><option value="all">전체 일</option>{[...Array(31)].map((_,i)=><option key={i+1} value={i+1}>{i+1}일</option>)}</select>
                         </div>
@@ -915,7 +1106,7 @@
             );
         }
 
-        function HomeScreen({ onNavigate, adminRole, setAdminRole, onOpenAdmin }) {
+        function HomeScreen({ onNavigate, adminRole, onOpenAdmin }) {
             return (
                 <div className="p-6 md:p-8 flex flex-col items-center justify-center h-full animate-fade-in bg-[radial-gradient(circle_at_top,_#eef2ff,_#f8fafc_42%,_#f1f5f9)]">
                     <div className="w-full flex flex-col gap-4">
@@ -1068,7 +1259,7 @@
             );
         }
 
-        function RegularTicketForm({ onBack, onSubmit, initialData, userRole }) {
+        function RegularTicketForm({ onBack, onSubmit, initialData }) {
             const [appType, setAppType] = useState('new');
             const [formData, setFormData] = useState({ name:'', department:'', phone:'', carNumber:'', oldCarNumber:'', unitNumber:'', registrationImg:null, idCardImg:null, signature: null, changeReason: '' });
             const regFileRef = useRef(null); const idFileRef = useRef(null);
