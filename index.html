@@ -85,6 +85,8 @@
         import { jsPDF } from 'jspdf';
 
         const LOCAL_STORAGE_KEY = 'parking_submissions_full_v3';
+        const ADMIN_SESSION_KEY = 'parking_admin_session_v1';
+        const ADMIN_SESSION_DURATION_MS = 24 * 60 * 60 * 1000;
         const STATUS_CHECK_RETENTION = { constructionDays: 1, regularMonths: 1 };
         const STORAGE_RETENTION = { constructionDays: 7, regularMonths: 1 };
         const FINAL_APPROVER_SIGNATURE_TEXT = '주차관제실';
@@ -339,10 +341,25 @@
             const [submissions, setSubmissions] = useState({ construction: [], regular: [] });
             const [lastSubmissionType, setLastSubmissionType] = useState('');
             const [adminRole, setAdminRole] = useState(null); 
+            const [adminLoginAt, setAdminLoginAt] = useState(null);
             const [editingItem, setEditingItem] = useState(null);
             const [showAdminLogin, setShowAdminLogin] = useState(false);
             const [notifications, setNotifications] = useState([]);
             const [showNotificationCenter, setShowNotificationCenter] = useState(false);
+
+            const isValidRoleId = (roleId) => Object.values(ROLES).some((role) => role.id === roleId);
+            const saveAdminSession = (roleId, loggedInAt = new Date().toISOString()) => {
+                if (!isValidRoleId(roleId)) return;
+                localStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify({ roleId, loggedInAt }));
+                setAdminRole(roleId);
+                setAdminLoginAt(loggedInAt);
+            };
+            const clearAdminSession = () => {
+                localStorage.removeItem(ADMIN_SESSION_KEY);
+                setAdminRole(null);
+                setAdminLoginAt(null);
+                setShowNotificationCenter(false);
+            };
             
             const toSubmissionGroups = (data) => {
                 const source = Array.isArray(data) ? data : [];
@@ -421,6 +438,79 @@
 
                 return messages;
             };
+
+            useEffect(() => {
+                try {
+                    const rawSession = localStorage.getItem(ADMIN_SESSION_KEY);
+                    if (!rawSession) return;
+                    const parsed = JSON.parse(rawSession);
+                    const roleId = parsed?.roleId;
+                    const loggedInAt = parsed?.loggedInAt;
+                    const loginMs = new Date(loggedInAt).getTime();
+                    const isExpired = Number.isNaN(loginMs) || (Date.now() - loginMs >= ADMIN_SESSION_DURATION_MS);
+                    if (!isValidRoleId(roleId) || isExpired) {
+                        localStorage.removeItem(ADMIN_SESSION_KEY);
+                        return;
+                    }
+                    setAdminRole(roleId);
+                    setAdminLoginAt(loggedInAt);
+                } catch {
+                    localStorage.removeItem(ADMIN_SESSION_KEY);
+                }
+            }, []);
+
+            useEffect(() => {
+                const handleSessionStorageChange = (e) => {
+                    if (e.key !== ADMIN_SESSION_KEY) return;
+                    if (!e.newValue) {
+                        setAdminRole(null);
+                        setAdminLoginAt(null);
+                        setShowNotificationCenter(false);
+                        return;
+                    }
+                    try {
+                        const parsed = JSON.parse(e.newValue);
+                        const roleId = parsed?.roleId;
+                        const loggedInAt = parsed?.loggedInAt;
+                        const loginMs = new Date(loggedInAt).getTime();
+                        const isExpired = Number.isNaN(loginMs) || (Date.now() - loginMs >= ADMIN_SESSION_DURATION_MS);
+                        if (!isValidRoleId(roleId) || isExpired) {
+                            setAdminRole(null);
+                            setAdminLoginAt(null);
+                            setShowNotificationCenter(false);
+                            return;
+                        }
+                        setAdminRole(roleId);
+                        setAdminLoginAt(loggedInAt);
+                    } catch {
+                        setAdminRole(null);
+                        setAdminLoginAt(null);
+                        setShowNotificationCenter(false);
+                    }
+                };
+                window.addEventListener('storage', handleSessionStorageChange);
+                return () => window.removeEventListener('storage', handleSessionStorageChange);
+            }, []);
+
+            useEffect(() => {
+                if (!adminRole || !adminLoginAt) return;
+                const loginMs = new Date(adminLoginAt).getTime();
+                if (Number.isNaN(loginMs)) {
+                    clearAdminSession();
+                    return;
+                }
+                const remainingMs = (loginMs + ADMIN_SESSION_DURATION_MS) - Date.now();
+                if (remainingMs <= 0) {
+                    clearAdminSession();
+                    alert('관리자 로그인 유지시간(24시간)이 만료되어 자동 로그아웃되었습니다.');
+                    return;
+                }
+                const timeoutId = window.setTimeout(() => {
+                    clearAdminSession();
+                    alert('관리자 로그인 유지시간(24시간)이 만료되어 자동 로그아웃되었습니다.');
+                }, remainingMs);
+                return () => window.clearTimeout(timeoutId);
+            }, [adminRole, adminLoginAt]);
 
             useEffect(() => {
                 setSubmissions(readLocalSubmissions());
@@ -623,7 +713,7 @@
                                 <Home size={12} />
                                 <span className="text-xs font-bold">홈</span>
                             </button>
-                            <button onClick={() => adminRole ? setAdminRole(null) : setShowAdminLogin(true)} className={`px-3 py-1.5 rounded-full border transition-all duration-200 flex items-center gap-1.5 ${adminRole ? 'bg-indigo-600 border-indigo-500 text-white shadow-md' : 'border-slate-700 text-slate-400 hover:text-white hover:border-slate-500 hover:bg-slate-800'}`}>
+                            <button onClick={() => adminRole ? clearAdminSession() : setShowAdminLogin(true)} className={`px-3 py-1.5 rounded-full border transition-all duration-200 flex items-center gap-1.5 ${adminRole ? 'bg-indigo-600 border-indigo-500 text-white shadow-md' : 'border-slate-700 text-slate-400 hover:text-white hover:border-slate-500 hover:bg-slate-800'}`}>
                                 <Lock size={12} />
                                 <span className="text-xs font-bold">{adminRole ? ROLES[Object.keys(ROLES).find(key => ROLES[key].id === adminRole)]?.name || '관리자' : '관리자'}</span>
                             </button>
@@ -645,7 +735,7 @@
                             </div>
                         ))}
                     </div>
-                    {showAdminLogin && <AdminLoginModal isOpen={showAdminLogin} onClose={() => setShowAdminLogin(false)} onLogin={(roleId) => { setAdminRole(roleId); setShowAdminLogin(false); }} />}
+                    {showAdminLogin && <AdminLoginModal isOpen={showAdminLogin} onClose={() => setShowAdminLogin(false)} onLogin={(roleId) => { saveAdminSession(roleId); setShowAdminLogin(false); }} />}
                 </div>
             );
         }
