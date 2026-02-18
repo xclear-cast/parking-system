@@ -81,7 +81,7 @@
     <script type="text/babel" data-type="module">
         import React, { useState, useEffect, useRef, useMemo } from 'react';
         import { createRoot } from 'react-dom/client';
-        import { Car, FileText, ArrowLeft, Trash2, ShieldCheck, X, Download, AlertCircle, Search, Clock, Lock, ChevronRight, UploadCloud, CheckCircle, Bell, UserCheck, BadgeCheck, PenTool, RotateCw, Briefcase } from 'lucide-react';
+        import { Car, FileText, ArrowLeft, Trash2, ShieldCheck, X, Download, AlertCircle, Search, Clock, Lock, ChevronRight, UploadCloud, CheckCircle, Bell, UserCheck, BadgeCheck, PenTool, RotateCw, Briefcase, Home } from 'lucide-react';
         import { jsPDF } from 'jspdf';
 
         const LOCAL_STORAGE_KEY = 'parking_submissions_full_v3';
@@ -135,6 +135,12 @@
             const today = new Date();
             return `${today.getFullYear()}년 ${String(today.getMonth() + 1).padStart(2, '0')}월 ${String(today.getDate()).padStart(2, '0')}일`;
         };
+
+        const sanitizeCarNumberInput = (value) =>
+            (value || '')
+                .replace(/[A-Za-z]/g, '')
+                .replace(/\s+/g, '');
+        const sanitizePhoneInput = (value) => (value || '').replace(/[^0-9]/g, '');
 
         const parseSubmissionArray = (raw) => {
             if (!raw) return [];
@@ -542,12 +548,19 @@
                             </div>
                             <h1 className="text-lg font-bold tracking-tight">주차관리시스템</h1>
                         </div>
-                        {currentView === 'home' && (
+                        <div className="flex items-center gap-2">
+                            <button
+                                onClick={() => { setCurrentView('home'); setEditingItem(null); }}
+                                className={`px-3 py-1.5 rounded-full border transition-all duration-200 flex items-center gap-1.5 ${currentView === 'home' ? 'bg-slate-800 border-slate-600 text-slate-200' : 'border-slate-700 text-slate-400 hover:text-white hover:border-slate-500 hover:bg-slate-800'}`}
+                            >
+                                <Home size={12} />
+                                <span className="text-xs font-bold">홈</span>
+                            </button>
                             <button onClick={() => adminRole ? setAdminRole(null) : setShowAdminLogin(true)} className={`px-3 py-1.5 rounded-full border transition-all duration-200 flex items-center gap-1.5 ${adminRole ? 'bg-indigo-600 border-indigo-500 text-white shadow-md' : 'border-slate-700 text-slate-400 hover:text-white hover:border-slate-500 hover:bg-slate-800'}`}>
                                 <Lock size={12} />
                                 <span className="text-xs font-bold">{adminRole ? ROLES[Object.keys(ROLES).find(key => ROLES[key].id === adminRole)]?.name || '관리자' : '관리자'}</span>
                             </button>
-                        )}
+                        </div>
                     </header>
                     <main className="flex-1 overflow-y-auto relative">{renderView()}</main>
                     <div className="absolute top-4 right-4 flex flex-col gap-2 z-50 pointer-events-none">
@@ -791,22 +804,28 @@
             const renderApplicationToPdf = (pdf, item, index = 1, total = 1) => {
                 const pageWidth = pdf.internal.pageSize.getWidth();
                 const pageHeight = pdf.internal.pageSize.getHeight();
-                let y = 14;
+                const marginX = 10;
+                const topY = 16;
+                const contentBottomY = pageHeight - 16;
+                const labelColW = 46;
+                const valueColX = marginX + labelColW;
+                const valueColW = pageWidth - marginX - valueColX;
+                let y = topY;
 
-                pdf.setFontSize(16);
+                pdf.setFontSize(19);
                 pdf.text('주차관리 신청서', pageWidth / 2, y, { align: 'center' });
                 if (total > 1) {
-                    pdf.setFontSize(9);
-                    pdf.text(`${index}/${total}`, pageWidth - 14, y, { align: 'right' });
+                    pdf.setFontSize(10);
+                    pdf.text(`${index}/${total}`, pageWidth - marginX, y, { align: 'right' });
                 }
+                y += 8.5;
+                pdf.setFontSize(10);
+                pdf.text(`문서번호: ${item.id || '-'}`, marginX, y);
+                pdf.text(`출력일시: ${formatDateTimeForDoc(new Date().toISOString())}`, pageWidth - marginX, y, { align: 'right' });
                 y += 7;
-                pdf.setFontSize(9);
-                pdf.text(`문서번호: ${item.id || '-'}`, 14, y);
-                pdf.text(`출력일시: ${formatDateTimeForDoc(new Date().toISOString())}`, pageWidth - 14, y, { align: 'right' });
-                y += 6;
                 pdf.setDrawColor(220);
-                pdf.line(14, y, pageWidth - 14, y);
-                y += 5;
+                pdf.line(marginX, y, pageWidth - marginX, y);
+                y += 5.5;
 
                 const rows = item.type === 'construction'
                     ? [
@@ -844,94 +863,104 @@
 
                 const drawRow = (label, value) => {
                     const text = `${value || '-'}`;
-                    const lines = pdf.splitTextToSize(text, pageWidth - 74);
-                    const height = Math.max(8, lines.length * 4 + 3);
-                    if (y + height > pageHeight - 14) {
+                    const lines = pdf.splitTextToSize(text, valueColW - 4);
+                    const height = Math.max(10.5, lines.length * 5 + 3.5);
+                    if (y + height > contentBottomY) {
                         pdf.addPage();
-                        y = 14;
+                        y = topY;
                     }
                     pdf.setFillColor(248, 250, 252);
-                    pdf.rect(14, y, 44, height, 'F');
+                    pdf.rect(marginX, y, labelColW, height, 'F');
                     pdf.setDrawColor(229, 231, 235);
-                    pdf.rect(14, y, 44, height);
-                    pdf.rect(58, y, pageWidth - 72, height);
-                    pdf.setFontSize(9);
-                    pdf.text(label, 16, y + 5.5);
-                    pdf.text(lines, 60, y + 5.5);
+                    pdf.rect(marginX, y, labelColW, height);
+                    pdf.rect(valueColX, y, pageWidth - marginX - valueColX, height);
+                    pdf.setFontSize(10);
+                    pdf.text(label, marginX + 2, y + 6.3);
+                    pdf.text(lines, valueColX + 2, y + 6.3);
                     y += height;
                 };
 
                 rows.forEach(([label, value]) => drawRow(label, value));
-                y += 4;
+                y += 5;
 
-                const sigBoxH = 34;
-                if (y + sigBoxH + 4 > pageHeight - 10) {
+                const sigBoxH = 40;
+                if (y + sigBoxH + 4 > contentBottomY) {
                     pdf.addPage();
-                    y = 14;
+                    y = topY;
                 }
                 const sigGap = 4;
-                const sigBoxW = (pageWidth - 28 - (sigGap * 2)) / 3;
-                const sigX1 = 14;
+                const sigBoxW = (pageWidth - (marginX * 2) - (sigGap * 2)) / 3;
+                const sigX1 = marginX;
                 const sigX2 = sigX1 + sigBoxW + sigGap;
                 const sigX3 = sigX2 + sigBoxW + sigGap;
                 pdf.setDrawColor(229, 231, 235);
                 pdf.rect(sigX1, y, sigBoxW, sigBoxH);
                 pdf.rect(sigX2, y, sigBoxW, sigBoxH);
                 pdf.rect(sigX3, y, sigBoxW, sigBoxH);
-                pdf.setFontSize(9);
-                pdf.text('신청자 서명', sigX1 + 2, y + 5);
-                pdf.text('1차 확인 서명', sigX2 + 2, y + 5);
-                pdf.text('최종 확인', sigX3 + 2, y + 5);
+                pdf.setFontSize(9.5);
+                pdf.text('신청자 서명', sigX1 + 2, y + 6);
+                pdf.text('1차 확인 서명', sigX2 + 2, y + 6);
+                pdf.text('최종 확인', sigX3 + 2, y + 6);
 
                 const sigImgW = sigBoxW - 4;
-                const sigImgH = 16;
+                const sigImgH = 20;
                 const hasApplicantSignature = addDataImageToPdf(pdf, item.signature, sigX1 + 2, y + 7, sigImgW, sigImgH);
                 const hasCheckerSignature = addDataImageToPdf(pdf, item.firstCheckedManagerSignature, sigX2 + 2, y + 7, sigImgW, sigImgH);
-                if (!hasApplicantSignature) { pdf.setFontSize(8); pdf.text('서명 없음', sigX1 + 2, y + 18); }
-                if (!hasCheckerSignature) { pdf.setFontSize(8); pdf.text('서명 없음', sigX2 + 2, y + 18); }
+                if (!hasApplicantSignature) { pdf.setFontSize(8); pdf.text('서명 없음', sigX1 + 2, y + 19); }
+                if (!hasCheckerSignature) { pdf.setFontSize(8); pdf.text('서명 없음', sigX2 + 2, y + 19); }
 
                 const applicantSignedAt = formatDateTimeForDoc(item.submittedAt);
                 const firstCheckedAt = formatDateTimeForDoc(item.firstCheckedAt);
                 if (applicantSignedAt !== '-') {
-                    pdf.setFontSize(6);
-                    pdf.text(applicantSignedAt, sigX1 + (sigBoxW / 2), y + 31, { align: 'center' });
+                    pdf.setFontSize(6.8);
+                    pdf.text(applicantSignedAt, sigX1 + (sigBoxW / 2), y + 35, { align: 'center' });
                 }
                 if (firstCheckedAt !== '-') {
-                    pdf.setFontSize(6);
-                    pdf.text(firstCheckedAt, sigX2 + (sigBoxW / 2), y + 31, { align: 'center' });
+                    pdf.setFontSize(6.8);
+                    pdf.text(firstCheckedAt, sigX2 + (sigBoxW / 2), y + 35, { align: 'center' });
                 }
 
                 const finalSignatureText = item.finalApprovalSignatureText || (item.status === 'approved' ? FINAL_APPROVER_SIGNATURE_TEXT : '');
                 if (finalSignatureText) {
-                    pdf.setFontSize(11);
-                    pdf.text(finalSignatureText, sigX3 + (sigBoxW / 2), y + 17, { align: 'center' });
+                    pdf.setFontSize(12);
+                    pdf.text(finalSignatureText, sigX3 + (sigBoxW / 2), y + 19, { align: 'center' });
                     const approvedAt = formatDateTimeForDoc(item.approvedAt);
                     if (approvedAt !== '-') {
-                        pdf.setFontSize(6);
-                        pdf.text(approvedAt, sigX3 + (sigBoxW / 2), y + 31, { align: 'center' });
+                        pdf.setFontSize(6.8);
+                        pdf.text(approvedAt, sigX3 + (sigBoxW / 2), y + 35, { align: 'center' });
                     }
                 } else {
                     pdf.setFontSize(8);
-                    pdf.text('미확정', sigX3 + (sigBoxW / 2), y + 20, { align: 'center' });
+                    pdf.text('미확정', sigX3 + (sigBoxW / 2), y + 22, { align: 'center' });
                 }
 
                 if (item.registrationImg || item.idCardImg) {
                     pdf.addPage();
                     let imgY = 16;
-                    pdf.setFontSize(13);
-                    pdf.text('첨부 서류', 14, imgY);
-                    imgY += 6;
+                    const imageBoxW = pageWidth - (marginX * 2);
+                    const hasBothAttachments = Boolean(item.registrationImg && item.idCardImg);
+                    const imageBoxH = hasBothAttachments ? 84 : 170;
+                    pdf.setFontSize(15);
+                    pdf.text('첨부 서류', marginX, imgY);
+                    imgY += 8;
                     if (item.registrationImg) {
-                        pdf.setFontSize(9);
-                        pdf.text('차량등록증', 14, imgY);
-                        const ok = addDataImageToPdf(pdf, item.registrationImg, 14, imgY + 2, 86, 55);
-                        if (!ok) { pdf.setFontSize(8); pdf.text('이미지 로드 실패', 14, imgY + 10); }
+                        pdf.setFontSize(10);
+                        pdf.text('차량등록증', marginX, imgY);
+                        imgY += 3;
+                        pdf.setDrawColor(229, 231, 235);
+                        pdf.rect(marginX, imgY, imageBoxW, imageBoxH);
+                        const ok = addDataImageToPdf(pdf, item.registrationImg, marginX + 1.5, imgY + 1.5, imageBoxW - 3, imageBoxH - 3);
+                        if (!ok) { pdf.setFontSize(9); pdf.text('이미지 로드 실패', marginX + 2, imgY + 12); }
+                        imgY += imageBoxH + 8;
                     }
                     if (item.idCardImg) {
-                        pdf.setFontSize(9);
-                        pdf.text('사원증', pageWidth - 96, imgY);
-                        const ok = addDataImageToPdf(pdf, item.idCardImg, pageWidth - 96, imgY + 2, 82, 55);
-                        if (!ok) { pdf.setFontSize(8); pdf.text('이미지 로드 실패', pageWidth - 96, imgY + 10); }
+                        pdf.setFontSize(10);
+                        pdf.text('사원증', marginX, imgY);
+                        imgY += 3;
+                        pdf.setDrawColor(229, 231, 235);
+                        pdf.rect(marginX, imgY, imageBoxW, imageBoxH);
+                        const ok = addDataImageToPdf(pdf, item.idCardImg, marginX + 1.5, imgY + 1.5, imageBoxW - 3, imageBoxH - 3);
+                        if (!ok) { pdf.setFontSize(9); pdf.text('이미지 로드 실패', marginX + 2, imgY + 12); }
                     }
                 }
             };
@@ -1399,7 +1428,7 @@
                                             className="flex-1 p-3 border border-slate-200 rounded-xl bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none font-bold tracking-wider" 
                                             value={formData.vehicles[0] || ''} 
                                             onChange={e=>{
-                                                const val = e.target.value.replace(/\s/g, '');
+                                                const val = sanitizeCarNumberInput(e.target.value);
                                                 setFormData({...formData, vehicles:[val]})
                                             }} 
                                             required 
@@ -1475,14 +1504,14 @@
                                 </div>
                             </div>
                             
-                            {appType==='change' && <div className="space-y-4 mb-6 p-4 bg-emerald-50 rounded-2xl border border-emerald-100"><FormInput label="기존 차량번호" required value={formData.oldCarNumber} onChange={e=>setFormData({...formData, oldCarNumber:e.target.value.replace(/\s/g, '')})} className="bg-white" placeholder="예: 12가3456" /><FormInput label="변경 사유" required value={formData.changeReason} onChange={e=>setFormData({...formData, changeReason:e.target.value})} placeholder="예: 차량 매매, 파손 등" className="bg-white" /></div>}
+                            {appType==='change' && <div className="space-y-4 mb-6 p-4 bg-emerald-50 rounded-2xl border border-emerald-100"><FormInput label="기존 차량번호" required value={formData.oldCarNumber} onChange={e=>setFormData({...formData, oldCarNumber:sanitizeCarNumberInput(e.target.value)})} className="bg-white" placeholder="예: 12가3456" /><FormInput label="변경 사유" required value={formData.changeReason} onChange={e=>setFormData({...formData, changeReason:e.target.value})} placeholder="예: 차량 매매, 파손 등" className="bg-white" /></div>}
                             
                             <div className="space-y-1">
                                 <FormInput label="성명" required value={formData.name} onChange={e=>setFormData({...formData, name:e.target.value})} placeholder="홍길동"/>
                                 <FormInput label="소속" required value={formData.department} onChange={e=>setFormData({...formData, department:e.target.value})} placeholder="예: 관리사무소"/>
                                 <FormInput label="연락처" type="tel" required value={formData.phone} onChange={e=>setFormData({...formData, phone:e.target.value.replace(/[^0-9]/g,'')})} placeholder="01012345678"/>
                                 <div className="grid grid-cols-2 gap-3">
-                                    <FormInput label={appType==='change'?'변경할 차량':'차량번호'} required value={formData.carNumber} onChange={e=>setFormData({...formData, carNumber:e.target.value.replace(/\s/g, '')})} className="bg-amber-50 border-amber-200 focus:ring-amber-500 focus:border-amber-500" placeholder="12가3456"/>
+                                    <FormInput label={appType==='change'?'변경할 차량':'차량번호'} required value={formData.carNumber} onChange={e=>setFormData({...formData, carNumber:sanitizeCarNumberInput(e.target.value)})} className="bg-amber-50 border-amber-200 focus:ring-amber-500 focus:border-amber-500" placeholder="12가3456"/>
                                     <FormInput label="호수" required value={formData.unitNumber} onChange={e=>setFormData({...formData, unitNumber:e.target.value.replace(/[^0-9]/g, '')})} placeholder="예: 101"/>
                                 </div>
                             </div>
@@ -1546,7 +1575,7 @@
         }
 
         function StatusCheckScreen({ onBack, submissions, onEdit }) {
-            const [name, setName] = useState(''); const [car, setCar] = useState(''); const [res, setRes] = useState(null);
+            const [phone, setPhone] = useState(''); const [car, setCar] = useState(''); const [res, setRes] = useState(null);
             const formatDateTime = (value) => {
                 if (!value) return '-';
                 const d = new Date(value);
@@ -1562,15 +1591,26 @@
             const isVisibleInStatusCheck = (item) => isWithinRetentionWindow(item, STATUS_CHECK_RETENTION);
             const search = (e) => {
                 e.preventDefault();
-                const c = submissions.construction.filter(i => isVisibleInStatusCheck(i) && (i.companyName===name || i.visitorName===name) && i.vehicles.some(v=>v.includes(car)));
-                const r = submissions.regular.filter(i => isVisibleInStatusCheck(i) && i.name===name && i.carNumber.includes(car));
+                const phoneQuery = sanitizePhoneInput(phone);
+                const carQuery = sanitizeCarNumberInput(car);
+                if (!phoneQuery || !carQuery) { setRes([]); return; }
+                const c = submissions.construction.filter(i =>
+                    isVisibleInStatusCheck(i) &&
+                    sanitizePhoneInput(i.driverPhone).includes(phoneQuery) &&
+                    (i.vehicles || []).some(v => sanitizeCarNumberInput(v).includes(carQuery))
+                );
+                const r = submissions.regular.filter(i =>
+                    isVisibleInStatusCheck(i) &&
+                    sanitizePhoneInput(i.phone).includes(phoneQuery) &&
+                    sanitizeCarNumberInput(i.carNumber).includes(carQuery)
+                );
                 setRes([...c, ...r]);
             };
             return (
                 <div className="flex flex-col h-full bg-slate-50">
                     <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-3 bg-white sticky top-0 z-10"><button onClick={onBack} className="p-2 -ml-2 rounded-full hover:bg-slate-50"><ArrowLeft className="text-slate-600"/></button><h2 className="text-xl font-bold text-slate-800">신청 내역 조회</h2></div>
                     <div className="p-5">
-                        <form onSubmit={search} className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 mb-6 space-y-3"><input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm" placeholder="성명 또는 업체명" value={name} onChange={e=>setName(e.target.value)}/><input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm" placeholder="차량번호" value={car} onChange={e=>setCar(e.target.value)}/><button className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold">조회하기</button></form>
+                        <form onSubmit={search} className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 mb-6 space-y-3"><input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm" placeholder="전화번호 (숫자만)" value={phone} onChange={e=>setPhone(sanitizePhoneInput(e.target.value))}/><input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm" placeholder="차량번호" value={car} onChange={e=>setCar(sanitizeCarNumberInput(e.target.value))}/><button className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold">조회하기</button></form>
                         <div className="space-y-4">
                             {res && res.map(i => (
                                 <div key={i.id} className={`bg-white p-5 rounded-2xl shadow-sm border-l-4 ${getStatusBorder(i.status)}`}>
