@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>주차 통합 관제 시스템 (UI개선)</title>
+    <title>주차 신청 접수시스템</title>
     
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -107,6 +107,8 @@
             '2222': { id: 'CENTER', name: '생활지원센터', type: 'all', desc: '정기권 및 방문(기타) 1차 확인' },
             '1234': { id: 'MASTER', name: '주차관제실', type: 'all', desc: '전체 내역 최종 승인' }
         };
+        const REGULAR_ACCESS_DENIED_MESSAGE = '방재실 계정은 정기권 신청 권한이 없습니다.';
+        const isRegularAccessBlockedForRole = (roleId) => roleId === 'SAFETY';
         const getRoleNameById = (roleId) => Object.values(ROLES).find(role => role.id === roleId)?.name || '';
         const ROLE_LOGIN_OPTIONS = ['MASTER', 'SAFETY', 'CENTER']
             .map((targetId) => {
@@ -439,8 +441,8 @@
                 });
             };
             const handleHomeNavigate = (targetView) => {
-                if (adminRole === 'SAFETY' && targetView === 'regular') {
-                    alert('방재실 계정은 정기권 신청 권한이 없습니다.');
+                if (isRegularAccessBlockedForRole(adminRole) && targetView === 'regular') {
+                    alert(REGULAR_ACCESS_DENIED_MESSAGE);
                     return;
                 }
                 const needsProxyConfirm = adminRole && (targetView === 'construction' || targetView === 'regular');
@@ -782,6 +784,12 @@
             };
 
             const handleSave = (type, data, isEdit, docId) => {
+                if (type === 'regular' && isRegularAccessBlockedForRole(adminRole)) {
+                    alert(REGULAR_ACCESS_DENIED_MESSAGE);
+                    setEditingItem(null);
+                    setCurrentView('home');
+                    return { ok: false, blockedByRole: true };
+                }
                 const all = [...submissions.construction, ...submissions.regular];
                 const nowIso = new Date().toISOString();
                 const receptionMeta = getReceptionMeta();
@@ -949,6 +957,9 @@
             };
 
             const renderView = () => {
+                if (isRegularAccessBlockedForRole(adminRole) && (currentView === 'regular' || currentView === 'edit_regular')) {
+                    return <HomeScreen onNavigate={handleHomeNavigate} adminRole={adminRole} onOpenAdmin={() => setShowAdminLogin(true)} />;
+                }
                 switch (currentView) {
                     case 'home': return <HomeScreen onNavigate={handleHomeNavigate} adminRole={adminRole} onOpenAdmin={() => setShowAdminLogin(true)} />;
                     case 'construction': return <ConstructionForm onBack={() => setCurrentView('home')} userRole={adminRole} onSubmit={(data) => {
@@ -980,7 +991,7 @@
                                 <div className="bg-indigo-600 p-1.5 rounded-lg shadow-inner shrink-0">
                                     <ShieldCheck size={20} className="text-white"/>
                                 </div>
-                                <h1 className="text-base sm:text-lg font-bold tracking-tight whitespace-nowrap truncate">주차관리시스템</h1>
+                                <h1 className="text-base sm:text-lg font-bold tracking-tight whitespace-nowrap truncate">주차 신청 접수시스템</h1>
                             </div>
                             <button
                                 onClick={() => {
@@ -1381,7 +1392,7 @@
                 let y = topY;
 
                 pdf.setFontSize(19);
-                pdf.text('주차관리 신청서', pageWidth / 2, y, { align: 'center' });
+                pdf.text('주차 신청서', pageWidth / 2, y, { align: 'center' });
                 if (total > 1) {
                     pdf.setFontSize(10);
                     pdf.text(`${index}/${total}`, pageWidth - marginX, y, { align: 'right' });
@@ -2088,7 +2099,7 @@
         }
 
         function HomeScreen({ onNavigate, adminRole, onOpenAdmin }) {
-            const isRegularBlocked = adminRole === 'SAFETY';
+            const isRegularBlocked = isRegularAccessBlockedForRole(adminRole);
             return (
                 <div className="p-6 md:p-8 flex flex-col items-center justify-center h-full animate-fade-in bg-[radial-gradient(circle_at_top,_#eef2ff,_#f8fafc_42%,_#f1f5f9)]">
                     <div className="w-full flex flex-col gap-4">
