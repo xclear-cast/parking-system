@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>주차 통합 관제 시스템</title>
+    <title>주차 통합 관제 시스템 (UI개선)</title>
     
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -12,11 +12,26 @@
             theme: {
                 extend: {
                     colors: {
-                        primary: '#4F46E5', // Indigo 600
-                        secondary: '#64748B', // Slate 500
-                        success: '#10B981', // Emerald 500
-                        danger: '#EF4444', // Red 500
-                        warning: '#F59E0B', // Amber 500
+                        primary: '#4F46E5',
+                        secondary: '#64748B',
+                        success: '#10B981',
+                        danger: '#EF4444',
+                        warning: '#F59E0B',
+                    },
+                    animation: {
+                        'bounce-short': 'bounce 1s infinite 2',
+                        'slide-in-right': 'slideInRight 0.3s ease-out forwards',
+                        'pulse-border': 'pulseBorder 2s infinite',
+                    },
+                    keyframes: {
+                        slideInRight: {
+                            '0%': { transform: 'translateX(100%)', opacity: '0' },
+                            '100%': { transform: 'translateX(0)', opacity: '1' },
+                        },
+                        pulseBorder: {
+                            '0%, 100%': { borderColor: '#818cf8' }, 
+                            '50%': { borderColor: '#4f46e5' }, 
+                        }
                     }
                 }
             }
@@ -43,80 +58,197 @@
         .safe-area-bottom { padding-bottom: env(safe-area-inset-bottom); }
         .animate-fade-in { animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
         .animate-scale-in { animation: scaleIn 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
-        .slide-down { animation: slideDown 0.3s ease-out forwards; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes scaleIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
-        @keyframes slideDown { from { opacity: 0; max-height: 0; } to { opacity: 1; max-height: 1000px; } }
         
-        /* 체크박스 커스텀 스타일 */
         .custom-checkbox {
-            appearance: none;
-            background-color: #fff;
-            margin: 0;
-            font: inherit;
-            color: currentColor;
-            width: 1.15em;
-            height: 1.15em;
-            border: 0.15em solid #cbd5e1;
-            border-radius: 0.3em;
-            display: grid;
-            place-content: center;
-            transition: all 0.2s ease-in-out;
+            appearance: none; background-color: #fff; margin: 0; font: inherit; color: currentColor;
+            width: 1.15em; height: 1.15em; border: 0.15em solid #cbd5e1; border-radius: 0.3em;
+            display: grid; place-content: center; transition: all 0.2s ease-in-out;
         }
-
         .custom-checkbox::before {
-            content: "";
-            width: 0.65em;
-            height: 0.65em;
-            transform: scale(0);
-            transition: 120ms transform ease-in-out;
-            box-shadow: inset 1em 1em white;
-            transform-origin: center;
-            clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+            content: ""; width: 0.65em; height: 0.65em; transform: scale(0);
+            transition: 120ms transform ease-in-out; box-shadow: inset 1em 1em white;
+            transform-origin: center; clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
         }
-
-        .custom-checkbox:checked {
-            background-color: #4F46E5;
-            border-color: #4F46E5;
-        }
-
-        .custom-checkbox:checked::before {
-            transform: scale(1);
-        }
+        .custom-checkbox:checked { background-color: #4F46E5; border-color: #4F46E5; }
+        .custom-checkbox:checked::before { transform: scale(1); }
     </style>
 </head>
 <body class="bg-gray-100 flex justify-center min-h-screen text-slate-800">
     <div id="root" class="w-full md:max-w-md h-[100dvh] bg-gray-50 shadow-2xl overflow-hidden flex flex-col relative"></div>
 
     <script type="text/babel" data-type="module">
-        import React, { useState, useEffect, useRef } from 'react';
+        import React, { useState, useEffect, useRef, useMemo } from 'react';
         import { createRoot } from 'react-dom/client';
-        import { Car, FileText, Camera, CheckCircle, ArrowLeft, MapPin, Phone, User, Briefcase, Plus, Trash2, ShieldCheck, Image as ImageIcon, ScanLine, X, RotateCw, Download, Filter, CalendarDays, AlertCircle, Search, Home, Clock, Edit2, Lock, Archive, ChevronRight, ChevronDown, MoreVertical, Eye, UploadCloud, CheckSquare } from 'lucide-react';
+        import { Car, FileText, ArrowLeft, Plus, Trash2, ShieldCheck, X, Download, Filter, AlertCircle, Search, Clock, Lock, ChevronRight, Eye, UploadCloud, CheckCircle, Bell, UserCheck, BadgeCheck, PenTool, RotateCw, Archive, Briefcase } from 'lucide-react';
         import JSZip from 'jszip';
 
-        // Local mode: all submissions are stored in browser localStorage.
-        const LOCAL_STORAGE_KEY = 'parking_submissions_local';
-        const STATUS_LABELS = { pending: '대기중', approved: '승인', rejected: '반려' };
-        const ADMIN_PASSWORD = '1234'; 
+        const LOCAL_STORAGE_KEY = 'parking_submissions_full_v3';
+        
+        // --- 권한 및 상태 정의 ---
+        const ROLES = {
+            '1111': { id: 'SAFETY', name: '방재실', label: '방재실장', type: 'construction', desc: '공사/방문 차량 1차 확인' },
+            '2222': { id: 'CENTER', name: '지원센터', label: '지원센터장', type: 'all', desc: '정기권 및 방문(기타) 1차 확인' },
+            '1234': { id: 'MASTER', name: '주차관리실', label: '관리소장', type: 'all', desc: '전체 내역 최종 승인' }
+        };
+        const getRoleNameById = (roleId) => Object.values(ROLES).find(role => role.id === roleId)?.name || '';
+
+        // 상태 라벨 변경: 1차 미승인 상태를 명확하게 '1차대기'로 표시
+        const STATUS_LABELS = { 
+            pending: '1차대기', // 기존 대기중 -> 1차대기 (방재실/지원센터 확인 전)
+            checked: '2차대기', // 기존 1차확인 -> 2차대기 (관리소장 승인 전)
+            approved: '최종승인', 
+            rejected: '반려' 
+        };
 
         const getStatusLabel = (status) => STATUS_LABELS[status] || status;
         
-        // 상태별 색상 (뱃지용)
         const getStatusColor = (status) => {
             switch(status) {
                 case 'approved': return 'bg-emerald-100 text-emerald-700 border border-emerald-200';
+                case 'checked': return 'bg-indigo-100 text-indigo-700 border border-indigo-200';
                 case 'rejected': return 'bg-rose-100 text-rose-700 border border-rose-200';
                 default: return 'bg-amber-100 text-amber-700 border border-amber-200';
             }
         };
 
+        const getStatusBorder = (status) => {
+            switch(status) {
+                case 'approved': return 'border-l-emerald-500';
+                case 'checked': return 'border-l-indigo-500';
+                case 'rejected': return 'border-l-rose-500';
+                default: return 'border-l-amber-500';
+            }
+        };
+
+        const getFormattedDate = () => {
+            const today = new Date();
+            return `${today.getFullYear()}년 ${String(today.getMonth() + 1).padStart(2, '0')}월 ${String(today.getDate()).padStart(2, '0')}일`;
+        };
+
+        // --- 서명 패드 ---
+        const SignaturePad = ({ onSave, initialData }) => {
+            const canvasRef = useRef(null);
+            const [isDrawing, setIsDrawing] = useState(false);
+            const [hasSignature, setHasSignature] = useState(!!initialData);
+
+            useEffect(() => {
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+                const ratio = Math.max(window.devicePixelRatio || 1, 1);
+                canvas.width = canvas.offsetWidth * ratio;
+                canvas.height = canvas.offsetHeight * ratio;
+                canvas.getContext("2d").scale(ratio, ratio);
+                if (initialData) {
+                    const ctx = canvas.getContext('2d');
+                    const img = new Image();
+                    img.onload = () => ctx.drawImage(img, 0, 0, canvas.offsetWidth, canvas.offsetHeight);
+                    img.src = initialData;
+                }
+            }, []);
+
+            const getPos = (e) => {
+                const canvas = canvasRef.current;
+                const rect = canvas.getBoundingClientRect();
+                return { 
+                    x: (e.touches ? e.touches[0].clientX : e.clientX) - rect.left, 
+                    y: (e.touches ? e.touches[0].clientY : e.clientY) - rect.top 
+                };
+            };
+
+            const startDrawing = (e) => {
+                e.preventDefault(); setIsDrawing(true);
+                const { x, y } = getPos(e);
+                const ctx = canvasRef.current.getContext('2d');
+                ctx.beginPath(); ctx.moveTo(x, y); ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.strokeStyle = '#000';
+            };
+
+            const draw = (e) => {
+                if (!isDrawing) return;
+                e.preventDefault();
+                const { x, y } = getPos(e);
+                const ctx = canvasRef.current.getContext('2d');
+                ctx.lineTo(x, y); ctx.stroke();
+                setHasSignature(true);
+            };
+
+            const endDrawing = () => {
+                if (isDrawing) { setIsDrawing(false); onSave(canvasRef.current.toDataURL()); }
+            };
+
+            const clear = () => {
+                const canvas = canvasRef.current;
+                canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+                setHasSignature(false); onSave(null);
+            };
+
+            return (
+                <div className="flex flex-col gap-2">
+                    <div className="relative border border-slate-300 rounded-xl bg-white overflow-hidden touch-none" style={{ height: '150px' }}>
+                        <canvas ref={canvasRef} className="w-full h-full cursor-crosshair" onMouseDown={startDrawing} onMouseMove={draw} onMouseUp={endDrawing} onMouseLeave={endDrawing} onTouchStart={startDrawing} onTouchMove={draw} onTouchEnd={endDrawing}/>
+                        {!hasSignature && <div className="absolute inset-0 flex items-center justify-center pointer-events-none text-slate-300 select-none">서명해 주세요</div>}
+                    </div>
+                    <button type="button" onClick={clear} className="text-xs text-slate-500 underline self-end hover:text-rose-500">서명 지우기</button>
+                </div>
+            );
+        };
+
+        function FirstCheckApproveModal({ isOpen, roleName, managerName, onManagerNameChange, signature, onSignatureChange, onClose, onConfirm }) {
+            if (!isOpen) return null;
+
+            return (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
+                    <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden">
+                        <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+                            <h3 className="text-base font-bold text-slate-800">1차 확인 승인</h3>
+                            <button type="button" onClick={onClose} className="p-1.5 rounded-full hover:bg-slate-100">
+                                <X size={18} className="text-slate-500" />
+                            </button>
+                        </div>
+                        <div className="p-4 space-y-4">
+                            <div>
+                                <label className="block text-xs font-bold text-slate-500 mb-1.5 ml-1">확인 부서</label>
+                                <input value={roleName} readOnly className="w-full p-3 bg-slate-100 border border-slate-200 rounded-xl text-sm font-medium text-slate-500" />
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold text-slate-500 mb-1.5 ml-1">담당자 이름</label>
+                                <input
+                                    value={managerName}
+                                    onChange={(e) => onManagerNameChange(e.target.value)}
+                                    placeholder="담당자 이름 입력"
+                                    className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all text-sm font-medium"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-xs font-bold text-slate-500 mb-1.5 ml-1">담당자 서명</label>
+                                <SignaturePad onSave={onSignatureChange} initialData={signature} />
+                            </div>
+                        </div>
+                        <div className="px-4 py-3 border-t border-slate-100 bg-slate-50 flex gap-2">
+                            <button type="button" onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-slate-300 text-slate-600 font-bold text-sm">취소</button>
+                            <button type="button" onClick={onConfirm} className="flex-1 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm">1차 확인</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        const FormInput = ({ label, ...props }) => (
+            <div className="mb-4">
+                <label className="block text-xs font-bold text-slate-500 mb-1.5 ml-1">{label}</label>
+                <input {...props} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all placeholder:text-slate-400 text-sm font-medium disabled:bg-slate-100 disabled:text-slate-400" />
+            </div>
+        );
+
         function App() {
             const [currentView, setCurrentView] = useState('home'); 
             const [submissions, setSubmissions] = useState({ construction: [], regular: [] });
             const [lastSubmissionType, setLastSubmissionType] = useState('');
-            const [isAdmin, setIsAdmin] = useState(false);
+            const [adminRole, setAdminRole] = useState(null); 
             const [editingItem, setEditingItem] = useState(null);
             const [showAdminLogin, setShowAdminLogin] = useState(false);
+            const [notifications, setNotifications] = useState([]);
             
             const toSubmissionGroups = (data) => ({
                 construction: data.filter(item => item.type === 'construction').sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt)),
@@ -126,12 +258,8 @@
             const readLocalSubmissions = () => {
                 try {
                     const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
-                    const data = raw ? JSON.parse(raw) : [];
-                    return Array.isArray(data) ? data : [];
-                } catch (error) {
-                    console.error("Local Data Load Error:", error);
-                    return [];
-                }
+                    return raw ? toSubmissionGroups(JSON.parse(raw)) : { construction: [], regular: [] };
+                } catch { return { construction: [], regular: [] }; }
             };
 
             const persistLocalSubmissions = (data) => {
@@ -142,233 +270,198 @@
             const getAllSubmissions = () => [...submissions.construction, ...submissions.regular];
 
             useEffect(() => {
-                setSubmissions(toSubmissionGroups(readLocalSubmissions()));
-            }, []);
-
-            const normalizeCarNumber = (car = '') => car.replace(/\s+/g, '').toUpperCase();
-            const getDateTime = (date, time, fallbackTime) => new Date(`${date}T${time || fallbackTime}`);
+                setSubmissions(readLocalSubmissions());
+                const handleStorageChange = (e) => {
+                    if (e.key === LOCAL_STORAGE_KEY) {
+                        const newData = JSON.parse(e.newValue || '[]');
+                        const oldData = JSON.parse(e.oldValue || '[]');
+                        setSubmissions(toSubmissionGroups(newData));
+                        if (adminRole && newData.length > oldData.length) {
+                            setNotifications(prev => [...prev, { id: Date.now(), message: '새로운 신청이 도착했습니다.' }]);
+                        }
+                    }
+                };
+                window.addEventListener('storage', handleStorageChange);
+                return () => window.removeEventListener('storage', handleStorageChange);
+            }, [adminRole]);
 
             const checkTimeOverlap = (newData, type, excludeId = null) => {
-                const newStart = getDateTime(newData.startDate, newData.startTime, '00:00');
-                const newEnd = getDateTime(newData.endDate, newData.endTime, '23:59');
-
-                if (Number.isNaN(newStart.getTime()) || Number.isNaN(newEnd.getTime()) || newStart >= newEnd) {
-                    return { isOverlap: false };
-                }
+                const normalize = (s) => s?.replace(/\s+/g, '').toUpperCase();
+                const newStart = new Date(`${newData.startDate}T${newData.startTime || '00:00'}`);
+                const newEnd = new Date(`${newData.endDate}T${newData.endTime || '23:59'}`);
                 
                 const targetList = type === 'construction' ? submissions.construction : submissions.regular;
-
+                
                 for (const existing of targetList) {
                     if (excludeId && existing.id === excludeId) continue;
                     if (existing.status === 'rejected') continue;
 
-                    let hasCarOverlap = false;
+                    let hasOverlap = false;
                     let overlappedCar = '';
 
                     if (type === 'construction') {
-                        const newVehicles = (newData.vehicles || []).map(normalizeCarNumber).filter(Boolean);
-                        const existingVehicles = (existing.vehicles || []).map(normalizeCarNumber).filter(Boolean);
-                        const overlap = newVehicles.find(v => existingVehicles.includes(v));
-                        if (overlap) {
-                            hasCarOverlap = true;
-                            overlappedCar = (newData.vehicles || []).find(v => normalizeCarNumber(v) === overlap) || overlap;
-                        }
+                        const newVs = (newData.vehicles||[]).map(normalize).filter(Boolean);
+                        const exVs = (existing.vehicles||[]).map(normalize).filter(Boolean);
+                        const match = newVs.find(v => exVs.includes(v));
+                        if (match) { hasOverlap = true; overlappedCar = match; }
                     } else {
-                        const newCar = normalizeCarNumber(newData.carNumber);
-                        const existingCar = normalizeCarNumber(existing.carNumber);
-                        if (newCar && newCar === existingCar) {
-                            hasCarOverlap = true;
-                            overlappedCar = newData.carNumber;
-                        }
+                        const nC = normalize(newData.carNumber);
+                        const eC = normalize(existing.carNumber);
+                        if (nC && nC === eC) { hasOverlap = true; overlappedCar = newData.carNumber; }
                     }
 
-                    if (!hasCarOverlap) continue;
+                    if (!hasOverlap) continue;
 
-                    const existingStart = getDateTime(existing.startDate, existing.startTime, '00:00');
-                    const existingEnd = getDateTime(existing.endDate, existing.endTime, '23:59');
-                    if (Number.isNaN(existingStart.getTime()) || Number.isNaN(existingEnd.getTime())) continue;
-
-                    if (newStart < existingEnd && newEnd > existingStart) {
+                    const exStart = new Date(`${existing.startDate}T${existing.startTime || '00:00'}`);
+                    const exEnd = new Date(`${existing.endDate}T${existing.endTime || '23:59'}`);
+                    
+                    if (newStart < exEnd && newEnd > exStart) {
                         return { isOverlap: true, car: overlappedCar, existing };
                     }
                 }
                 return { isOverlap: false };
             };
 
-            const buildConstructionOverlapMessage = (overlapCheck) => {
-                const existing = overlapCheck.existing || {};
-                const existingSchedule = `${existing.startDate || '-'} ${existing.startTime || '00:00'} ~ ${existing.endDate || '-'} ${existing.endTime || '23:59'}`;
-                return `[신청 불가] 차량(${overlapCheck.car})은 동일 시간에 이미 신청되어 있습니다.\n\n기존 일정: ${existingSchedule}`;
-            };
-
-            const handleSaveConstruction = async (data, isEdit = false, docId = null) => {
-                const cleanVehicles = (data.vehicles || []).map(v => v.trim().toUpperCase()).filter(Boolean);
-                const overlapCheck = checkTimeOverlap({ ...data, vehicles: cleanVehicles }, 'construction', docId);
-                if (overlapCheck.isOverlap) {
-                    const message = buildConstructionOverlapMessage(overlapCheck);
-                    alert(message);
-                    return { ok: false, reason: 'overlap', message };
-                }
-
-                try {
-                    const cleanData = { ...data, driverPhone: data.driverPhone.replace(/-/g, ''), vehicles: cleanVehicles };
-                    const allSubmissions = getAllSubmissions();
-                    let nextSubmissions;
-
-                    if (isEdit && docId) {
-                        nextSubmissions = allSubmissions.map(item =>
-                            item.id === docId
-                                ? { ...item, ...cleanData, status: 'pending', rejectionReason: null, updatedAt: new Date().toISOString() }
-                                : item
-                        );
-                        setLastSubmissionType('방문 등록 (수정됨)');
-                    } else {
-                        const newItem = {
-                            id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                            type: 'construction',
-                            status: 'pending',
-                            submittedAt: new Date().toISOString(),
-                            ...cleanData
-                        };
-                        nextSubmissions = [newItem, ...allSubmissions];
-                        setLastSubmissionType('방문 등록');
-                    }
-
-                    persistLocalSubmissions(nextSubmissions);
-                    setEditingItem(null);
-                    setCurrentView('success');
-                    return { ok: true };
-                } catch (error) {
-                    const message = "저장 실패: " + error.message;
-                    alert(message);
-                    return { ok: false, reason: 'error', message };
-                }
-            };
-
-            const handleSaveRegular = async (data, isEdit = false, docId = null) => {
-                if (data.applicationType !== 'change') {
-                    const overlapCheck = checkTimeOverlap({
-                        ...data,
-                        startDate: new Date().toISOString().split('T')[0],
-                        endDate: new Date().getFullYear() + '-12-31',
-                        startTime: '00:00',
-                        endTime: '23:59'
-                    }, 'regular', docId);
-
-                    if (overlapCheck.isOverlap) {
-                        alert(`[신청 불가] 차량(${overlapCheck.car})은 이미 정기권이 등록되어 있습니다.`);
-                        return;
-                    }
-                }
-
-                try {
-                    const cleanData = { ...data, phone: data.phone.replace(/-/g, '') };
-                    const allSubmissions = getAllSubmissions();
-                    let nextSubmissions;
-
-                    if (isEdit && docId) {
-                        nextSubmissions = allSubmissions.map(item =>
-                            item.id === docId
-                                ? { ...item, ...cleanData, status: 'pending', rejectionReason: null, updatedAt: new Date().toISOString() }
-                                : item
-                        );
-                        setLastSubmissionType('정기권 신청 (수정됨)');
-                    } else {
-                        const newItem = {
-                            id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                            type: 'regular',
-                            status: 'pending',
-                            submittedAt: new Date().toISOString(),
-                            ...cleanData
-                        };
-                        nextSubmissions = [newItem, ...allSubmissions];
-                        setLastSubmissionType('정기권 신청');
-                    }
-
-                    persistLocalSubmissions(nextSubmissions);
-                    setEditingItem(null);
-                    setCurrentView('success');
-                } catch (error) {
-                    alert("저장 실패: " + error.message);
-                }
-            };
-
-            const updateStatus = async (type, id, newStatus, reason = null) => {
-                try {
-                    const allSubmissions = getAllSubmissions();
-                    const nextSubmissions = allSubmissions.map(item => {
-                        if (item.id !== id) return item;
-                        return {
-                            ...item,
-                            status: newStatus,
-                            rejectionReason: reason !== null ? reason : item.rejectionReason
-                        };
-                    });
-                    persistLocalSubmissions(nextSubmissions);
-                } catch (error) {
-                    console.error("Update Error:", error);
-                    alert("상태 변경 실패");
-                }
-            };
-
-            const handleEditClick = (item) => {
-                setEditingItem(item);
-                setCurrentView(item.type === 'construction' ? 'edit_construction' : 'edit_regular');
-            };
-
-            const handleAdminClick = () => {
-                if (isAdmin) {
-                    setIsAdmin(false); // 로그아웃
+            const handleSave = (type, data, isEdit, docId) => {
+                const all = [...submissions.construction, ...submissions.regular];
+                const cleanData = { ...data, updatedAt: new Date().toISOString() };
+                const isAutoCheckedRealEstate = type === 'construction' && cleanData.visitPurpose === '부동산';
+                const firstCheckDefaults = isAutoCheckedRealEstate ? {
+                    status: 'checked',
+                    checkedBy: '주차관리팀',
+                    firstCheckedManagerName: '주차관리팀',
+                    firstCheckedManagerRole: 'MASTER',
+                    firstCheckedManagerSignature: null,
+                    firstCheckedAt: new Date().toISOString()
+                } : {
+                    status: 'pending',
+                    checkedBy: null,
+                    firstCheckedManagerName: null,
+                    firstCheckedManagerRole: null,
+                    firstCheckedManagerSignature: null,
+                    firstCheckedAt: null
+                };
+                
+                let nextSubmissions;
+                if (isEdit && docId) {
+                    nextSubmissions = all.map(item => item.id === docId ? {
+                        ...item,
+                        ...cleanData,
+                        ...firstCheckDefaults,
+                        approvedBy: null,
+                        approvedAt: null,
+                        rejectionReason: null,
+                        rejectedBy: null,
+                        rejectedAt: null
+                    } : item);
                 } else {
-                    setShowAdminLogin(true); // 로그인 모달 열기
+                    const newItem = {
+                        id: `doc-${Date.now()}-${Math.random().toString(36).substr(2,5)}`,
+                        type,
+                        ...firstCheckDefaults,
+                        submittedAt: new Date().toISOString(),
+                        ...cleanData
+                    };
+                    nextSubmissions = [newItem, ...all];
                 }
+                persistLocalSubmissions(nextSubmissions);
+                setEditingItem(null);
+                setLastSubmissionType(type === 'construction' ? '공사/방문 등록' : '정기권 신청');
+                setCurrentView('success');
+                return { ok: true };
+            };
+
+            const updateStatus = (id, newStatus, reason = null, meta = {}) => {
+                const all = getAllSubmissions();
+                const next = all.map(item => {
+                    if (item.id !== id) return item;
+                    const updates = { status: newStatus };
+                    const roleInfo = ROLES[Object.keys(ROLES).find(k => ROLES[k].id === adminRole)];
+                    const name = roleInfo ? roleInfo.name : 'Unknown';
+
+                    if (newStatus === 'checked') {
+                        updates.checkedBy = name;
+                        updates.firstCheckedManagerName = meta.managerName || item.firstCheckedManagerName || null;
+                        updates.firstCheckedManagerRole = meta.managerRole || adminRole || item.firstCheckedManagerRole || null;
+                        updates.firstCheckedManagerSignature = meta.managerSignature || item.firstCheckedManagerSignature || null;
+                        updates.firstCheckedAt = new Date().toISOString();
+                    }
+                    else if (newStatus === 'approved') {
+                        updates.approvedBy = name;
+                        updates.approvedAt = new Date().toISOString();
+                    }
+                    else if (newStatus === 'rejected') {
+                        updates.rejectionReason = reason;
+                        updates.rejectedBy = name;
+                        updates.rejectedAt = new Date().toISOString();
+                    }
+                    return { ...item, ...updates };
+                });
+                persistLocalSubmissions(next);
+            };
+
+            const deleteSubmissions = (ids) => {
+                if (!ids || ids.length === 0) return;
+                const idSet = new Set(ids);
+                const next = getAllSubmissions().filter(item => !idSet.has(item.id));
+                persistLocalSubmissions(next);
             };
 
             const renderView = () => {
                 switch (currentView) {
-                    case 'home': return <HomeScreen onNavigate={setCurrentView} isAdmin={isAdmin} setIsAdmin={setIsAdmin} />;
-                    case 'construction': return <ConstructionForm onBack={() => setCurrentView('home')} onSubmit={(data) => handleSaveConstruction(data, false)} />;
-                    case 'regular': return <RegularTicketForm onBack={() => setCurrentView('home')} onSubmit={(data) => handleSaveRegular(data, false)} />;
-                    case 'edit_construction': return <ConstructionForm onBack={() => setCurrentView('statusCheck')} onSubmit={(data) => handleSaveConstruction(data, true, editingItem.id)} initialData={editingItem} />;
-                    case 'edit_regular': return <RegularTicketForm onBack={() => setCurrentView('statusCheck')} onSubmit={(data) => handleSaveRegular(data, true, editingItem.id)} initialData={editingItem} />;
-                    case 'statusCheck': return <StatusCheckScreen onBack={() => setCurrentView('home')} submissions={submissions} onEdit={handleEditClick} />;
-                    case 'admin': return <AdminDashboard onBack={() => setCurrentView('home')} submissions={submissions} onUpdateStatus={updateStatus} />;
+                    case 'home': return <HomeScreen onNavigate={setCurrentView} adminRole={adminRole} setAdminRole={setAdminRole} onOpenAdmin={() => setShowAdminLogin(true)} />;
+                    case 'construction': return <ConstructionForm onBack={() => setCurrentView('home')} userRole={adminRole} onSubmit={(data) => {
+                        const check = checkTimeOverlap(data, 'construction');
+                        if (check.isOverlap) { alert(`[중복] 차량 ${check.car}는 이미 등록되어 있습니다.`); return { ok: false }; }
+                        return handleSave('construction', data, false);
+                    }} />;
+                    case 'regular': return <RegularTicketForm onBack={() => setCurrentView('home')} userRole={adminRole} onSubmit={(data) => {
+                        if (data.applicationType !== 'change') {
+                            const check = checkTimeOverlap({...data, startDate: new Date().toISOString().split('T')[0], endDate: '2099-12-31'}, 'regular');
+                            if (check.isOverlap) { alert(`[중복] 차량 ${check.car}는 이미 등록되어 있습니다.`); return { ok: false }; }
+                        }
+                        return handleSave('regular', data, false);
+                    }} />;
+                    case 'edit_construction': return <ConstructionForm onBack={() => setCurrentView('statusCheck')} userRole={adminRole} initialData={editingItem} onSubmit={(data) => handleSave('construction', data, true, editingItem.id)} />;
+                    case 'edit_regular': return <RegularTicketForm onBack={() => setCurrentView('statusCheck')} userRole={adminRole} initialData={editingItem} onSubmit={(data) => handleSave('regular', data, true, editingItem.id)} />;
+                    case 'statusCheck': return <StatusCheckScreen onBack={() => setCurrentView('home')} submissions={submissions} onEdit={(item)=>{ setEditingItem(item); setCurrentView(item.type==='construction'?'edit_construction':'edit_regular'); }} />;
+                    case 'admin': return <AdminDashboard onBack={() => setCurrentView('home')} submissions={submissions} onUpdateStatus={updateStatus} onDeleteSubmissions={deleteSubmissions} adminRole={adminRole} />;
                     case 'success': return <SuccessScreen type={lastSubmissionType} onHome={() => setCurrentView('home')} />;
                     default: return <HomeScreen onNavigate={setCurrentView} />;
                 }
             };
 
             return (
-                <div className="flex flex-col h-full bg-slate-50">
+                <div className="flex flex-col h-full bg-slate-50 relative">
                     <header className="bg-slate-900 text-white px-5 py-4 flex justify-between items-center shrink-0 z-10 shadow-lg">
                         <div className="flex items-center space-x-3">
-                            <div className="bg-blue-600 p-1.5 rounded-lg shadow-inner">
+                            <div className="bg-indigo-600 p-1.5 rounded-lg shadow-inner">
                                 <ShieldCheck size={20} className="text-white"/>
                             </div>
-                            <h1 className="text-lg font-bold tracking-tight">주차 통합 관제</h1>
+                            <h1 className="text-lg font-bold tracking-tight">주차관리시스템</h1>
                         </div>
                         {currentView === 'home' && (
-                            <button onClick={handleAdminClick} className={`px-3 py-1.5 rounded-full border transition-all duration-200 flex items-center gap-1.5 ${isAdmin ? 'bg-indigo-600 border-indigo-500 text-white shadow-md' : 'border-slate-700 text-slate-400 hover:text-white hover:border-slate-500 hover:bg-slate-800'}`}>
+                            <button onClick={() => adminRole ? setAdminRole(null) : setShowAdminLogin(true)} className={`px-3 py-1.5 rounded-full border transition-all duration-200 flex items-center gap-1.5 ${adminRole ? 'bg-indigo-600 border-indigo-500 text-white shadow-md' : 'border-slate-700 text-slate-400 hover:text-white hover:border-slate-500 hover:bg-slate-800'}`}>
                                 <Lock size={12} />
-                                <span className="text-xs font-bold">{isAdmin ? '관리자 ON' : '관리자'}</span>
+                                <span className="text-xs font-bold">{adminRole ? ROLES[Object.keys(ROLES).find(key => ROLES[key].id === adminRole)]?.name || '관리자' : '관리자'}</span>
                             </button>
                         )}
                     </header>
                     <main className="flex-1 overflow-y-auto relative">{renderView()}</main>
-
-                    {/* 관리자 비밀번호 입력 모달 */}
-                    {showAdminLogin && (
-                        <AdminLoginModal 
-                            isOpen={showAdminLogin} 
-                            onClose={() => setShowAdminLogin(false)} 
-                            onLogin={() => { setIsAdmin(true); setShowAdminLogin(false); }} 
-                        />
-                    )}
+                    <div className="absolute top-4 right-4 flex flex-col gap-2 z-50 pointer-events-none">
+                        {notifications.map(noti => (
+                            <div key={noti.id} className="bg-slate-800/90 backdrop-blur text-white p-3 rounded-xl shadow-xl flex items-center gap-3 animate-slide-in-right">
+                                <Bell className="text-yellow-400 animate-bounce-short" size={20} />
+                                <span className="text-sm font-bold">{noti.message}</span>
+                            </div>
+                        ))}
+                    </div>
+                    {showAdminLogin && <AdminLoginModal isOpen={showAdminLogin} onClose={() => setShowAdminLogin(false)} onLogin={(roleId) => { setAdminRole(roleId); setShowAdminLogin(false); }} />}
                 </div>
             );
         }
 
-        // --- 컴포넌트 ---
+        // ... 부가 모달 및 유틸 컴포넌트 ...
         function HistoryModal({ isOpen, onClose, historyList, targetCar }) {
             if (!isOpen) return null;
             return (
@@ -384,14 +477,9 @@
                                         <span className={`px-2 py-0.5 rounded-full font-bold border ${getStatusColor(item.status)} text-[10px]`}>{getStatusLabel(item.status)}</span>
                                     </div>
                                     <div className="text-base font-bold text-slate-800 mb-1">{item.type==='construction'?item.companyName:item.name}</div>
-                                    
-                                    {/* 시간 표시 추가 */}
                                     {item.type === 'construction' && (
-                                        <div className="text-sm font-bold text-indigo-600 mb-1 bg-indigo-50 px-2 py-1 rounded-md inline-flex items-center gap-1 border border-indigo-100">
-                                            <Clock size={12}/> {item.startTime} ~ {item.endTime}
-                                        </div>
+                                        <div className="text-sm font-bold text-indigo-600 mb-1 bg-indigo-50 px-2 py-1 rounded-md inline-flex items-center gap-1 border border-indigo-100"><Clock size={12}/> {item.startTime} ~ {item.endTime}</div>
                                     )}
-
                                     <div className="text-xs text-slate-500 flex items-center gap-1 mt-1"><Briefcase size={12}/>{item.type==='construction'?`목적: ${item.visitPurpose}`:item.applicationType}</div>
                                 </div>
                             ))}
@@ -402,24 +490,33 @@
             );
         }
 
-        // 이미지 확대 보기 모달
-        function ImageModal({ src, onClose }) {
+        function ImageModal({ src, onClose, title }) {
             if (!src) return null;
             return (
                 <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90 p-4 animate-fade-in cursor-pointer" onClick={onClose}>
-                    <img src={src} className="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl" />
+                    <img src={src} className="max-w-full max-h-[80vh] object-contain rounded-lg shadow-2xl bg-white" />
+                    {title && <div className="absolute top-6 left-6 text-white font-bold text-lg">{title}</div>}
                     <button className="absolute top-6 right-6 text-white bg-white/20 p-2 rounded-full hover:bg-white/30"><X size={28}/></button>
                     <div className="absolute bottom-6 text-white/70 text-sm bg-black/50 px-3 py-1 rounded-full">화면을 눌러 닫기</div>
                 </div>
             )
         }
 
-        function AdminDashboard({ onBack, submissions, onUpdateStatus }) {
-            const [activeTab, setActiveTab] = useState('construction');
+        // --- 관리자 대시보드 ---
+        function AdminDashboard({ onBack, submissions, onUpdateStatus, onDeleteSubmissions, adminRole }) {
+            const getInitialTab = () => {
+                if (adminRole === 'SAFETY') return 'construction';
+                return 'construction'; 
+            };
+
+            const [activeTab, setActiveTab] = useState(getInitialTab());
             const [filterYear, setFilterYear] = useState(new Date().getFullYear());
             const [filterMonth, setFilterMonth] = useState(new Date().getMonth() + 1);
             const [filterDay, setFilterDay] = useState('all');
-            const [filterStatus, setFilterStatus] = useState('all');
+            
+            const [filterStatus, setFilterStatus] = useState(adminRole === 'MASTER' ? 'checked' : 'all');
+            
+            const [searchType, setSearchType] = useState('all'); 
             const [searchText, setSearchText] = useState(''); 
             const [expandedId, setExpandedId] = useState(null); 
             const [historyOpen, setHistoryOpen] = useState(false);
@@ -429,34 +526,46 @@
             const [rejectReason, setRejectReason] = useState("");
             const [isZipping, setIsZipping] = useState(false);
             const [viewImage, setViewImage] = useState(null);
-            const [selectedIds, setSelectedIds] = useState(new Set()); // 선택된 항목 ID
+            const [viewImageTitle, setViewImageTitle] = useState('');
+            const [selectedIds, setSelectedIds] = useState(new Set()); 
+            const [checkingItem, setCheckingItem] = useState(null);
+            const [firstCheckerName, setFirstCheckerName] = useState('');
+            const [firstCheckerSignature, setFirstCheckerSignature] = useState(null);
 
-            // 연도 목록 생성 (2026년부터 5년간)
             const yearOptions = Array.from({length: 5}, (_, i) => 2026 + i);
 
-            // 탭 변경시 펼침 상태 및 선택 상태 초기화
             useEffect(() => {
-                setExpandedId(null);
-                setSelectedIds(new Set());
-            }, [activeTab]);
+                if (adminRole === 'SAFETY') setActiveTab('construction');
+                if (adminRole === 'CENTER' && activeTab !== 'regular' && activeTab !== 'construction') setActiveTab('regular');
+            }, [adminRole]);
 
-            const list = submissions[activeTab];
+            const list = submissions[activeTab] || [];
             const filteredList = list.filter(item => {
                 const d = new Date(item.submittedAt);
-                // 1. 날짜 필터
                 if (d.getFullYear() !== parseInt(filterYear)) return false;
                 if ((d.getMonth()+1) !== parseInt(filterMonth)) return false;
                 if (filterDay!=='all' && d.getDate() !== parseInt(filterDay)) return false;
-                // 2. 상태 필터
                 if (filterStatus!=='all' && item.status !== filterStatus) return false;
-                // 3. 검색어 필터 (차량번호, 이름, 업체명, 방문자)
+
+                if (activeTab === 'construction') {
+                    if (adminRole === 'SAFETY' && !['공사', '기타'].includes(item.visitPurpose)) return false;
+                    if (adminRole === 'CENTER' && item.visitPurpose !== '기타') return false;
+                }
+                
                 if (searchText) {
                     const term = searchText.toLowerCase();
                     const car = (item.carNumber || (item.vehicles ? item.vehicles.join(' ') : '')).toLowerCase();
                     const name = (item.name || item.companyName || '').toLowerCase();
-                    const visitor = (item.visitorName || '').toLowerCase();
-                    if (!car.includes(term) && !name.includes(term) && !visitor.includes(term)) {
-                        return false;
+                    const unit = (item.unitNumber || item.visitUnit || '').toLowerCase();
+
+                    if (searchType === 'all') {
+                        if (!car.includes(term) && !name.includes(term) && !unit.includes(term)) return false;
+                    } else if (searchType === 'name') {
+                        if (!name.includes(term)) return false;
+                    } else if (searchType === 'car') {
+                        if (!car.includes(term)) return false;
+                    } else if (searchType === 'unit') {
+                        if (!unit.includes(term)) return false;
                     }
                 }
                 return true;
@@ -475,170 +584,223 @@
                 return { count, history };
             };
 
-            // 선택 로직
             const toggleSelectAll = () => {
                 if (filteredList.length === 0) return;
                 const allSelected = filteredList.every(item => selectedIds.has(item.id));
-                if (allSelected) {
-                    setSelectedIds(new Set());
-                } else {
-                    const newSet = new Set(selectedIds);
-                    filteredList.forEach(item => newSet.add(item.id));
-                    setSelectedIds(newSet);
-                }
+                if (allSelected) { setSelectedIds(new Set()); } else { const newSet = new Set(selectedIds); filteredList.forEach(item => newSet.add(item.id)); setSelectedIds(newSet); }
             };
+            const toggleSelect = (id) => { const newSet = new Set(selectedIds); if (newSet.has(id)) { newSet.delete(id); } else { newSet.add(id); } setSelectedIds(newSet); };
+            const getTargetList = () => selectedIds.size > 0 ? filteredList.filter(item => selectedIds.has(item.id)) : filteredList;
 
-            const toggleSelect = (id) => {
-                const newSet = new Set(selectedIds);
-                if (newSet.has(id)) {
-                    newSet.delete(id);
-                } else {
-                    newSet.add(id);
-                }
-                setSelectedIds(newSet);
-            };
-
-            const getTargetList = () => {
-                if (selectedIds.size > 0) {
-                    return filteredList.filter(item => selectedIds.has(item.id));
-                }
-                return filteredList;
-            };
+            useEffect(() => { if(!window.XLSX) { const s = document.createElement('script'); s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"; document.body.appendChild(s); } }, []);
 
             const handleDownload = () => {
                 if (!window.XLSX) return alert("엑셀 로딩중...");
                 const targetList = getTargetList();
                 if (targetList.length === 0) return alert("다운로드할 데이터가 없습니다.");
-
                 const ws_data = [];
                 if(activeTab==='construction') {
-                    ws_data.push(["차량번호","업체명","방문자성명","시작일","시작시간","종료일","종료시간","연락처","메모","호수"]);
-                    targetList.forEach(i => i.vehicles.forEach(v => { if(v.trim()) ws_data.push([v, i.companyName, i.visitorName, i.startDate, i.startTime, i.endDate, i.endTime, i.driverPhone, `[${i.visitPurpose}] ${i.location} ${i.status==='rejected'?i.rejectionReason:''}`, i.visitUnit]) }));
+                    ws_data.push(["상태","차량번호","업체명","방문자성명","시작일","시작시간","종료일","종료시간","연락처","메모","호수","1차확인자","최종승인자"]);
+                    targetList.forEach(i => i.vehicles.forEach(v => { if(v.trim()) ws_data.push([getStatusLabel(i.status), v, i.companyName, i.visitorName, i.startDate, i.startTime, i.endDate, i.endTime, i.driverPhone, `[${i.visitPurpose}] ${i.location}`, i.visitUnit, i.checkedBy||'-', i.approvedBy||'-']) }));
                 } else {
-                    ws_data.push(["차량번호","시작일","시작시간","종료일","종료시간","사용자명","연락처","업체","부서","직급","차종","부제","동","호수","메모"]);
+                    ws_data.push(["상태","차량번호","시작일","종료일","사용자명","연락처","부서","호수","메모","1차확인자","최종승인자"]);
                     const today = new Date().toISOString().split('T')[0];
-                    targetList.forEach(i => ws_data.push([i.carNumber, today, "00:00", new Date().getFullYear()+"-12-31", "23:59", i.name, i.phone, i.department, "", "", "", "미사용", "", i.unitNumber, `${i.applicationType} ${i.status==='rejected'?i.rejectionReason:''}`]));
+                    targetList.forEach(i => ws_data.push([getStatusLabel(i.status), i.carNumber, today, "2099-12-31", i.name, i.phone, i.department, i.unitNumber, i.applicationType, i.checkedBy||'-', i.approvedBy||'-']));
                 }
                 const wb = window.XLSX.utils.book_new();
                 window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.aoa_to_sheet(ws_data), "Sheet1");
-                window.XLSX.writeFile(wb, `export_${activeTab}_${new Date().toISOString().slice(0,10)}.xlsx`);
+                window.XLSX.writeFile(wb, `주차관리_${activeTab}_${new Date().toISOString().slice(0,10)}.xlsx`);
             };
 
             const handleZipDownload = async () => {
                 if (isZipping) return;
                 const targetList = getTargetList();
                 if (targetList.length === 0) return alert("다운로드할 데이터가 없습니다.");
-
                 setIsZipping(true);
                 try {
                     const zip = new JSZip();
-                    const allData = { date: new Date().toISOString(), type: activeTab, count: targetList.length, data: targetList };
-                    zip.file("data.json", JSON.stringify(allData, null, 2));
                     const imgFolder = zip.folder("images");
                     let imgCount = 0;
-                    
                     targetList.forEach(item => {
-                        if (item.registrationImg) {
-                            const base64Data = item.registrationImg.split(',')[1];
-                            if(base64Data) { imgFolder.file(`${item.name || item.companyName}_${item.carNumber || '차량'}_등록증.jpg`, base64Data, {base64: true}); imgCount++; }
-                        }
-                        if (item.idCardImg) {
-                            const base64Data = item.idCardImg.split(',')[1];
-                            if(base64Data) { imgFolder.file(`${item.name || item.companyName}_${item.carNumber || '차량'}_사원증.jpg`, base64Data, {base64: true}); imgCount++; }
-                        }
+                        const prefix = `${item.name || item.companyName}_${item.carNumber || (item.vehicles ? item.vehicles[0] : '차량')}`;
+                        if (item.registrationImg) { const b64 = item.registrationImg.split(',')[1]; if(b64) { imgFolder.file(`${prefix}_등록증.jpg`, b64, {base64: true}); imgCount++; } }
+                        if (item.idCardImg) { const b64 = item.idCardImg.split(',')[1]; if(b64) { imgFolder.file(`${prefix}_사원증.jpg`, b64, {base64: true}); imgCount++; } }
+                        if (item.signature) { const b64 = item.signature.split(',')[1]; if(b64) { imgFolder.file(`${prefix}_서명.png`, b64, {base64: true}); imgCount++; } }
                     });
-
-                    if (imgCount === 0 && targetList.length === 0) {
-                        alert("저장할 데이터가 없습니다."); setIsZipping(false); return;
-                    }
+                    if (imgCount === 0) { alert("저장할 이미지가 없습니다."); setIsZipping(false); return; }
                     const content = await zip.generateAsync({type:"blob"});
                     const url = window.URL.createObjectURL(content);
-                    const a = document.createElement("a"); a.href = url; a.download = `주차관리_${activeTab}_${selectedIds.size > 0 ? '선택' : '전체'}_${new Date().toISOString().slice(0,10)}.zip`; a.click();
+                    const a = document.createElement("a"); a.href = url; a.download = `이미지_${activeTab}_${new Date().toISOString().slice(0,10)}.zip`; a.click();
                     window.URL.revokeObjectURL(url);
-                } catch (error) { console.error("ZIP Error:", error); alert("압축 중 오류가 발생했습니다."); } finally { setIsZipping(false); }
+                } catch (error) { alert("오류 발생"); } finally { setIsZipping(false); }
             };
 
-            useEffect(() => { if(!window.XLSX) { const s = document.createElement('script'); s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"; document.body.appendChild(s); } }, []);
+            const handleDeleteSelected = () => {
+                if (adminRole !== 'MASTER') return;
+                if (selectedIds.size === 0) { alert("삭제할 항목을 선택해주세요."); return; }
+                const ok = window.confirm(`정말 지우시겠습니까?\n선택된 ${selectedIds.size}건이 삭제됩니다.`);
+                if (!ok) return;
+                onDeleteSubmissions(Array.from(selectedIds));
+                setSelectedIds(new Set());
+                setExpandedId(null);
+            };
 
-            // 상세 항목 렌더링 헬퍼
+            const closeFirstCheckModal = () => {
+                setCheckingItem(null);
+                setFirstCheckerName('');
+                setFirstCheckerSignature(null);
+            };
+
+            const handleFirstCheckConfirm = () => {
+                if (!checkingItem) return;
+                if (!firstCheckerName.trim()) { alert('담당자 이름을 입력해주세요.'); return; }
+                if (!firstCheckerSignature) { alert('담당자 서명을 등록해주세요.'); return; }
+                onUpdateStatus(checkingItem.id, 'checked', null, {
+                    managerName: firstCheckerName.trim(),
+                    managerRole: adminRole,
+                    managerSignature: firstCheckerSignature
+                });
+                closeFirstCheckModal();
+            };
+
             const InfoRow = ({ label, value, highlight }) => (
                 <div className="flex justify-between items-center py-2 border-b border-slate-100 last:border-0 hover:bg-slate-50 px-2 rounded">
                     <span className="text-slate-500 text-xs w-20 font-medium">{label}</span>
                     <span className={`text-sm font-bold text-right flex-1 break-keep ${highlight ? 'text-indigo-600' : 'text-slate-700'}`}>{value || '-'}</span>
                 </div>
             );
-            
+
+            const renderActionButtons = (item) => {
+                if (item.status === 'approved' || item.status === 'rejected') return null;
+                const isMaster = adminRole === 'MASTER';
+                const isSafety = adminRole === 'SAFETY';
+                const isCenter = adminRole === 'CENTER';
+                const isFirstCheckRole = isSafety || isCenter;
+                const canFirstCheck = item.status === 'pending' && (
+                    (isSafety && item.type === 'construction') ||
+                    (isCenter && (item.type === 'regular' || (item.type === 'construction' && item.visitPurpose === '기타')))
+                );
+
+                if (isFirstCheckRole && item.status !== 'pending') return null;
+
+                if (rejectingId === item.id) {
+                    return (
+                        <div className="mt-3 animate-fade-in bg-white p-3 rounded-xl border border-rose-200 shadow-sm">
+                            <input className="w-full border border-slate-300 rounded-lg p-2.5 text-sm mb-2" placeholder="반려 사유 입력" value={rejectReason} onChange={e=>setRejectReason(e.target.value)} autoFocus/>
+                            <div className="flex gap-2">
+                                <button onClick={()=>setRejectingId(null)} className="flex-1 py-2.5 rounded-lg border border-slate-300 text-slate-600 font-bold text-sm">취소</button>
+                                <button onClick={()=> { onUpdateStatus(item.id, 'rejected', rejectReason); setRejectingId(null); }} className="flex-1 py-2.5 rounded-lg bg-rose-500 text-white font-bold text-sm shadow-md">확인</button>
+                            </div>
+                        </div>
+                    );
+                }
+
+                return (
+                    <div className="flex gap-2 mt-3">
+                        <button onClick={()=>{setRejectingId(item.id); setRejectReason("")}} className="flex-1 border border-rose-200 text-rose-600 bg-white hover:bg-rose-50 text-sm py-3 rounded-xl font-bold transition">반려</button>
+                        {canFirstCheck && (
+                            <button onClick={()=>{ setCheckingItem(item); setFirstCheckerName(''); setFirstCheckerSignature(null); }} className="flex-1 bg-indigo-500 hover:bg-indigo-600 text-white text-sm py-3 rounded-xl font-bold shadow-lg shadow-indigo-100 transition">1차 확인</button>
+                        )}
+                        {isMaster && (
+                            item.status === 'checked' ? (
+                                <button onClick={()=>onUpdateStatus(item.id, 'approved')} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white text-sm py-3 rounded-xl font-bold shadow-lg shadow-emerald-200 transition animate-pulse">최종 승인</button>
+                            ) : (
+                                <button onClick={()=>onUpdateStatus(item.id, 'approved')} className="flex-1 bg-slate-600 hover:bg-slate-700 text-white text-sm py-3 rounded-xl font-bold transition">직권 승인</button>
+                            )
+                        )}
+                    </div>
+                );
+            };
+
             const isAllSelected = filteredList.length > 0 && filteredList.every(item => selectedIds.has(item.id));
             const selectedCount = selectedIds.size;
 
             return (
                 <div className="flex flex-col h-full bg-slate-50">
                     <HistoryModal isOpen={historyOpen} onClose={()=>setHistoryOpen(false)} historyList={historyList} targetCar={targetCar} />
-                    <ImageModal src={viewImage} onClose={()=>setViewImage(null)} />
+                    <ImageModal src={viewImage} title={viewImageTitle} onClose={()=>{setViewImage(null); setViewImageTitle('');}} />
+                    <FirstCheckApproveModal
+                        isOpen={!!checkingItem}
+                        roleName={getRoleNameById(adminRole)}
+                        managerName={firstCheckerName}
+                        onManagerNameChange={setFirstCheckerName}
+                        signature={firstCheckerSignature}
+                        onSignatureChange={setFirstCheckerSignature}
+                        onClose={closeFirstCheckModal}
+                        onConfirm={handleFirstCheckConfirm}
+                    />
                     
                     <div className="bg-white p-5 pb-2 shadow-sm z-10 sticky top-0">
                         <div className="flex justify-between mb-4 items-center">
                             <div className="flex items-center space-x-3">
                                 <button onClick={onBack} className="p-2 -ml-2 rounded-full hover:bg-slate-100 transition"><ArrowLeft size={20} className="text-slate-600"/></button>
-                                <h2 className="font-bold text-xl text-slate-800">관리자 대시보드</h2>
+                                <div className="flex flex-col">
+                                    <h2 className="font-bold text-xl text-slate-800">관리자 대시보드</h2>
+                                    <span className="text-xs text-slate-500">{ROLES[Object.keys(ROLES).find(k => ROLES[k].id === adminRole)]?.name || '관리자'} 모드</span>
+                                </div>
                             </div>
                             <span className="text-xs font-bold bg-indigo-50 text-indigo-600 px-3 py-1.5 rounded-full border border-indigo-100">Total: {filteredList.length}</span>
                         </div>
                         
                         <div className="grid grid-cols-3 gap-2 mb-3">
-                            <select value={filterYear} onChange={e=>setFilterYear(e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none">
-                                {yearOptions.map(year => (
-                                    <option key={year} value={year}>{year}년</option>
-                                ))}
-                            </select>
-                            <select value={filterMonth} onChange={e=>setFilterMonth(e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none">{[...Array(12)].map((_,i)=><option key={i+1} value={i+1}>{i+1}월</option>)}</select>
-                            <select value={filterDay} onChange={e=>setFilterDay(e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none"><option value="all">전체 일</option>{[...Array(31)].map((_,i)=><option key={i+1} value={i+1}>{i+1}일</option>)}</select>
+                            <select value={filterYear} onChange={e=>setFilterYear(e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:outline-none">{yearOptions.map(y=><option key={y} value={y}>{y}년</option>)}</select>
+                            <select value={filterMonth} onChange={e=>setFilterMonth(e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:outline-none">{[...Array(12)].map((_,i)=><option key={i+1} value={i+1}>{i+1}월</option>)}</select>
+                            <select value={filterDay} onChange={e=>setFilterDay(e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:outline-none"><option value="all">전체 일</option>{[...Array(31)].map((_,i)=><option key={i+1} value={i+1}>{i+1}일</option>)}</select>
                         </div>
 
-                        {/* 검색 기능 추가 */}
-                        <div className="relative mb-3">
-                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18}/>
-                            <input 
-                                className="w-full pl-10 pr-4 py-3 bg-white border border-slate-200 rounded-xl text-sm font-medium focus:ring-2 focus:ring-indigo-500 outline-none transition-all placeholder:text-slate-400" 
-                                placeholder="차량번호, 성명, 업체명 검색..." 
-                                value={searchText} 
-                                onChange={e=>setSearchText(e.target.value)}
-                            />
+                        <div className="flex gap-2 mb-3">
+                            <select value={searchType} onChange={e=>setSearchType(e.target.value)} className="w-1/3 p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:outline-none"><option value="all">전체 검색</option><option value="name">성명/업체</option><option value="car">차량번호</option><option value="unit">호수</option></select>
+                            <div className="relative flex-1"><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18}/><input className="w-full pl-10 pr-4 py-3 bg-white border border-slate-200 rounded-xl text-sm font-medium focus:outline-none" placeholder="검색어 입력" value={searchText} onChange={e=>setSearchText(e.target.value)}/></div>
                         </div>
 
                         <div className="mb-3">
-                            <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none"><option value="all">모든 상태 보기</option><option value="pending">대기중인 건만</option><option value="approved">승인된 건만</option><option value="rejected">반려된 건만</option></select>
+                            {adminRole === 'MASTER' && filterStatus === 'checked' ? (
+                                <div className="flex items-center justify-between bg-indigo-50 border border-indigo-100 p-2.5 rounded-lg mb-1 animate-pulse-border border-2">
+                                    <span className="text-xs font-bold text-indigo-700 flex items-center gap-1"><BadgeCheck size={14}/> 1차 확인되어 넘어온 건만 조회 중</span>
+                                    <button onClick={()=>setFilterStatus('all')} className="text-xs bg-white border border-indigo-200 px-2 py-1 rounded shadow-sm text-indigo-600 font-bold">전체 보기</button>
+                                </div>
+                            ) : (
+                                <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:outline-none">
+                                    <option value="all">모든 상태 보기</option>
+                                    <option value="pending">1차대기 (미확인)</option>
+                                    <option value="checked">2차대기 (1차확인됨)</option>
+                                    <option value="approved">최종 승인됨</option>
+                                    <option value="rejected">반려됨</option>
+                                </select>
+                            )}
                         </div>
                         
-                        {/* 탭 버튼 */}
                         <div className="flex p-1 bg-slate-100 rounded-xl mb-3">
-                            <button onClick={()=>setActiveTab('construction')} className={`flex-1 py-2.5 text-sm rounded-lg font-bold transition-all ${activeTab==='construction'?'bg-white text-indigo-600 shadow-sm ring-1 ring-black/5':'text-slate-500 hover:text-slate-700'}`}>공사/방문</button>
-                            <button onClick={()=>setActiveTab('regular')} className={`flex-1 py-2.5 text-sm rounded-lg font-bold transition-all ${activeTab==='regular'?'bg-white text-emerald-600 shadow-sm ring-1 ring-black/5':'text-slate-500 hover:text-slate-700'}`}>정기권</button>
+                            {(adminRole === 'MASTER' || adminRole === 'SAFETY' || adminRole === 'CENTER') && (
+                                <button onClick={()=>setActiveTab('construction')} className={`flex-1 py-2.5 text-sm rounded-lg font-bold transition-all ${activeTab==='construction'?'bg-white text-indigo-600 shadow-sm ring-1 ring-black/5':'text-slate-500 hover:text-slate-700'}`}>공사/방문</button>
+                            )}
+                            {(adminRole === 'MASTER' || adminRole === 'CENTER') && (
+                                <button onClick={()=>setActiveTab('regular')} className={`flex-1 py-2.5 text-sm rounded-lg font-bold transition-all ${activeTab==='regular'?'bg-white text-emerald-600 shadow-sm ring-1 ring-black/5':'text-slate-500 hover:text-slate-700'}`}>정기권</button>
+                            )}
                         </div>
 
-                        {/* 액션 버튼 */}
                         <div className="flex gap-2 pb-3">
-                            <button onClick={handleDownload} className="flex-1 bg-slate-800 hover:bg-slate-900 text-white py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-lg shadow-slate-200 transition active:scale-95">
-                                <Download size={16}/>
-                                <span>{selectedCount > 0 ? `${selectedCount}건 엑셀 저장` : '전체 엑셀 저장'}</span>
-                            </button>
-                            <button onClick={handleZipDownload} disabled={isZipping} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-lg shadow-indigo-200 transition active:scale-95">
-                                {isZipping ? <RotateCw className="animate-spin" size={16}/> : <Archive size={16}/>}
-                                <span>{isZipping ? '압축중...' : (selectedCount > 0 ? `${selectedCount}건 ZIP` : '전체 ZIP')}</span>
-                            </button>
+                            <button onClick={handleDownload} className="flex-1 bg-slate-800 hover:bg-slate-900 text-white py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-lg transition active:scale-95"><Download size={16}/><span>{selectedCount>0?`${selectedCount}건 엑셀`:'전체 엑셀'}</span></button>
+                            <button onClick={handleZipDownload} disabled={isZipping} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-lg transition active:scale-95">{isZipping?<RotateCw className="animate-spin" size={16}/>:<Archive size={16}/>}<span>{isZipping?'압축중':(selectedCount>0?`${selectedCount}건 ZIP`:'전체 ZIP')}</span></button>
+                            {adminRole === 'MASTER' && (
+                                <button
+                                    onClick={handleDeleteSelected}
+                                    disabled={selectedCount === 0}
+                                    title={selectedCount === 0 ? '삭제할 항목을 선택하세요' : '선택 항목 삭제'}
+                                    className={`px-3 py-3 rounded-xl text-sm font-bold flex items-center justify-center shadow-lg transition active:scale-95 ${selectedCount === 0 ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-rose-500 hover:bg-rose-600 text-white shadow-rose-200'}`}
+                                >
+                                    <Trash2 size={18}/>
+                                </button>
+                            )}
                         </div>
                     </div>
 
                     <div className="flex-1 overflow-y-auto p-5 space-y-4 bg-slate-50">
-                        {filteredList.length === 0 && <div className="text-center py-10 text-slate-400 text-sm">표시할 내역이 없습니다.</div>}
-                        
-                        {/* 윈도우 스타일 리스트 (테이블 헤더 느낌) */}
+                        {filteredList.length === 0 && <div className="text-center py-10 text-slate-400 text-sm">{filterStatus==='checked'?'1차 확인된 건이 없습니다.':'표시할 내역이 없습니다.'}</div>}
                         {filteredList.length > 0 && (
                             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
                                 <div className="flex items-center p-3 bg-slate-100 border-b border-slate-200 text-xs font-bold text-slate-500">
-                                    <div className="w-10 flex justify-center items-center">
-                                        <input type="checkbox" checked={isAllSelected} onChange={toggleSelectAll} className="custom-checkbox cursor-pointer"/>
-                                    </div>
+                                    <div className="w-10 flex justify-center items-center"><input type="checkbox" checked={isAllSelected} onChange={toggleSelectAll} className="custom-checkbox cursor-pointer"/></div>
                                     <div className="w-14 text-center">상태</div>
                                     <div className="flex-1 px-2">내용</div>
                                     <div className="w-20 text-right pr-2">날짜</div>
@@ -649,45 +811,27 @@
                                     const isDuplicate = count >= 2;
                                     const isExpanded = expandedId === item.id;
                                     const isSelected = selectedIds.has(item.id);
+                                    const isWaitingApproval = adminRole === 'MASTER' && item.status === 'checked';
 
                                     return (
-                                        <div key={item.id} className={`border-b border-slate-100 last:border-0 bg-white ${isSelected ? 'bg-indigo-50/20' : ''}`}>
-                                            {/* 요약 행 (클릭 시 펼침) */}
-                                            <div 
-                                                onClick={() => setExpandedId(isExpanded ? null : item.id)}
-                                                className={`flex items-center p-4 cursor-pointer hover:bg-slate-50 transition-colors ${isExpanded ? 'bg-indigo-50/30' : ''}`}
-                                            >
-                                                <div className="w-10 flex justify-center shrink-0" onClick={(e) => e.stopPropagation()}>
-                                                    <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(item.id)} className="custom-checkbox cursor-pointer"/>
-                                                </div>
-                                                <div className="w-14 flex justify-center shrink-0">
-                                                    <span className={`px-2 py-1 rounded text-[10px] font-bold ${getStatusColor(item.status)}`}>{getStatusLabel(item.status)}</span>
-                                                </div>
+                                        <div key={item.id} className={`border-b border-slate-100 last:border-0 bg-white ${isSelected ? 'bg-indigo-50/20' : ''} ${isWaitingApproval ? 'border-2 border-indigo-500 z-10 relative' : ''}`}>
+                                            <div onClick={() => setExpandedId(isExpanded ? null : item.id)} className={`flex items-center p-4 cursor-pointer hover:bg-slate-50 transition-colors ${isExpanded ? 'bg-indigo-50/30' : ''}`}>
+                                                <div className="w-10 flex justify-center shrink-0" onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={isSelected} onChange={() => toggleSelect(item.id)} className="custom-checkbox cursor-pointer"/></div>
+                                                <div className="w-14 flex justify-center shrink-0"><span className={`px-2 py-1 rounded text-[10px] font-bold ${getStatusColor(item.status)}`}>{getStatusLabel(item.status)}</span></div>
                                                 <div className="flex-1 px-2 min-w-0 flex flex-col justify-center">
                                                     <div className="flex items-center gap-1.5">
-                                                        <span className="font-bold text-slate-800 text-sm truncate">
-                                                            {activeTab==='construction'? item.companyName : item.name}
-                                                        </span>
+                                                        <span className="font-bold text-slate-800 text-sm truncate">{activeTab==='construction'? item.companyName : item.name}</span>
                                                         {isDuplicate && <AlertCircle size={14} className="text-rose-500 shrink-0"/>}
+                                                        {isWaitingApproval && <span className="bg-red-500 text-white text-[10px] px-1.5 rounded-full animate-bounce">승인대기</span>}
                                                     </div>
-                                                    <span className="text-xs text-slate-500 truncate mt-0.5 font-medium">
-                                                        {activeTab==='construction'? (item.vehicles[0] || '차량없음') + (item.vehicles.length>1?` 외 ${item.vehicles.length-1}`:'') : item.carNumber}
-                                                    </span>
+                                                    <span className="text-xs text-slate-500 truncate mt-0.5 font-medium">{activeTab==='construction'? (item.vehicles[0] || '차량없음') + (item.vehicles.length>1?` 외 ${item.vehicles.length-1}`:'') : item.carNumber}</span>
                                                 </div>
-                                                <div className="w-20 text-right text-[10px] text-slate-400 leading-tight shrink-0">
-                                                    {new Date(item.submittedAt).toLocaleDateString().slice(5)}<br/>
-                                                    {new Date(item.submittedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}
-                                                </div>
-                                                <div className="w-6 flex justify-end text-slate-400 shrink-0">
-                                                    <ChevronRight size={16} className={`transition-transform duration-300 ${isExpanded ? 'rotate-90 text-indigo-500' : ''}`}/>
-                                                </div>
+                                                <div className="w-20 text-right text-[10px] text-slate-400 leading-tight shrink-0">{new Date(item.submittedAt).toLocaleDateString().slice(5)}<br/>{new Date(item.submittedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+                                                <div className="w-6 flex justify-end text-slate-400 shrink-0"><ChevronRight size={16} className={`transition-transform duration-300 ${isExpanded ? 'rotate-90 text-indigo-500' : ''}`}/></div>
                                             </div>
-
-                                            {/* 상세 내용 (아코디언) */}
                                             <div className={`overflow-hidden transition-all duration-300 bg-slate-50 border-t border-slate-100 ${isExpanded ? 'max-h-[1000px] opacity-100' : 'max-h-0 opacity-0'}`}>
                                                 <div className="p-4 space-y-4">
                                                     {isDuplicate && <button onClick={()=> { setTargetCar(item.vehicles[0]); setHistoryList(history); setHistoryOpen(true); }} className="w-full bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 text-xs py-2.5 rounded-lg flex items-center justify-center font-bold transition"><AlertCircle size={14} className="mr-1.5"/> 금일 {count}회 중복 신청 (이력보기)</button>}
-                                                    
                                                     <div className="bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
                                                         {activeTab==='construction' ? (
                                                             <>
@@ -695,61 +839,51 @@
                                                                 <InfoRow label="방문호수" value={`${item.visitUnit}호`} />
                                                                 <InfoRow label="방문내용" value={item.location} />
                                                                 <InfoRow label="연락처" value={item.driverPhone} />
+                                                                {item.firstCheckedManagerRole && <InfoRow label="확인부서" value={getRoleNameById(item.firstCheckedManagerRole)} />}
+                                                                {item.firstCheckedManagerName && <InfoRow label="담당자명" value={item.firstCheckedManagerName} />}
                                                                 <InfoRow label="방문기간" value={`${item.startDate} ${item.startTime} ~ ${item.endDate} ${item.endTime}`} />
                                                                 <InfoRow label="차량번호" value={item.vehicles.join(', ')} highlight />
                                                             </>
                                                         ) : (
                                                             <>
                                                                 <InfoRow label="신청구분" value={`${item.applicationType} ${item.applicationType==='change' ? `(기존: ${item.oldCarNumber})` : ''}`} />
+                                                                {item.applicationType === 'change' && <InfoRow label="변경사유" value={item.changeReason} highlight />}
                                                                 <InfoRow label="신청호수" value={`${item.unitNumber}호`} />
                                                                 <InfoRow label="소속" value={item.department} />
                                                                 <InfoRow label="연락처" value={item.phone} />
+                                                                {item.firstCheckedManagerRole && <InfoRow label="확인부서" value={getRoleNameById(item.firstCheckedManagerRole)} />}
+                                                                {item.firstCheckedManagerName && <InfoRow label="담당자명" value={item.firstCheckedManagerName} />}
                                                                 <InfoRow label="차량번호" value={item.carNumber} highlight />
-                                                                
                                                                 {(item.registrationImg || item.idCardImg) && (
                                                                     <div className="mt-2 pt-2 border-t border-slate-100 px-2">
                                                                         <span className="text-xs text-slate-400 block mb-2 font-bold">첨부 서류 (클릭하여 확대)</span>
                                                                         <div className="flex gap-3 pb-1">
-                                                                            {item.registrationImg && (
-                                                                                <div className="flex flex-col gap-1 shrink-0 group cursor-pointer" onClick={() => setViewImage(item.registrationImg)}>
-                                                                                    <div className="relative">
-                                                                                        <img src={item.registrationImg} className="h-20 w-28 rounded-lg border border-slate-200 object-cover shadow-sm group-hover:opacity-90 transition"/>
-                                                                                        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 bg-black/20 rounded-lg transition"><Eye className="text-white drop-shadow-md" size={20}/></div>
-                                                                                    </div>
-                                                                                    <span className="text-[10px] text-slate-500 text-center font-medium">차량등록증</span>
-                                                                                </div>
-                                                                            )}
-                                                                            {item.idCardImg && (
-                                                                                <div className="flex flex-col gap-1 shrink-0 group cursor-pointer" onClick={() => setViewImage(item.idCardImg)}>
-                                                                                    <div className="relative">
-                                                                                        <img src={item.idCardImg} className="h-20 w-28 rounded-lg border border-slate-200 object-cover shadow-sm group-hover:opacity-90 transition"/>
-                                                                                        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 bg-black/20 rounded-lg transition"><Eye className="text-white drop-shadow-md" size={20}/></div>
-                                                                                    </div>
-                                                                                    <span className="text-[10px] text-slate-500 text-center font-medium">사원증</span>
-                                                                                </div>
-                                                                            )}
+                                                                            {item.registrationImg && <div className="flex flex-col gap-1 shrink-0 group cursor-pointer" onClick={() => {setViewImage(item.registrationImg); setViewImageTitle('차량등록증');}}><img src={item.registrationImg} className="h-16 w-24 rounded-lg border border-slate-200 object-cover"/><span className="text-[10px] text-slate-500 text-center">차량등록증</span></div>}
+                                                                            {item.idCardImg && <div className="flex flex-col gap-1 shrink-0 group cursor-pointer" onClick={() => {setViewImage(item.idCardImg); setViewImageTitle('사원증');}}><img src={item.idCardImg} className="h-16 w-24 rounded-lg border border-slate-200 object-cover"/><span className="text-[10px] text-slate-500 text-center">사원증</span></div>}
                                                                         </div>
                                                                     </div>
                                                                 )}
                                                             </>
                                                         )}
-                                                    </div>
-
-                                                    {item.status === 'pending' && (
-                                                        rejectingId === item.id ? 
-                                                        <div className="animate-fade-in bg-white p-3 rounded-xl border border-slate-200 shadow-sm">
-                                                            <input className="w-full border border-slate-300 rounded-lg p-2.5 text-sm mb-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none" placeholder="반려 사유를 입력하세요" value={rejectReason} onChange={e=>setRejectReason(e.target.value)} autoFocus/>
-                                                            <div className="flex gap-2">
-                                                                <button onClick={()=>setRejectingId(null)} className="flex-1 py-2.5 rounded-lg border border-slate-300 text-slate-600 font-bold text-sm hover:bg-slate-50">취소</button>
-                                                                <button onClick={()=> { onUpdateStatus(activeTab, item.id, 'rejected', rejectReason); setRejectingId(null); }} className="flex-1 py-2.5 rounded-lg bg-rose-500 text-white font-bold text-sm hover:bg-rose-600 shadow-md shadow-rose-200">확인</button>
+                                                        {item.signature && (
+                                                            <div className="mt-2 pt-2 border-t border-slate-100 px-2">
+                                                                <span className="text-xs text-slate-400 block mb-2 font-bold">전자 서명</span>
+                                                                <div className="h-20 bg-slate-50 rounded-lg border border-slate-200 flex items-center justify-center p-2 cursor-pointer" onClick={() => {setViewImage(item.signature); setViewImageTitle('서명');}}><img src={item.signature} className="max-h-full max-w-full"/></div>
                                                             </div>
+                                                        )}
+                                                        {item.firstCheckedManagerSignature && (
+                                                            <div className="mt-2 pt-2 border-t border-slate-100 px-2">
+                                                                <span className="text-xs text-slate-400 block mb-2 font-bold">1차 확인 담당자 서명</span>
+                                                                <div className="h-20 bg-slate-50 rounded-lg border border-slate-200 flex items-center justify-center p-2 cursor-pointer" onClick={() => {setViewImage(item.firstCheckedManagerSignature); setViewImageTitle('1차 확인 담당자 서명');}}><img src={item.firstCheckedManagerSignature} className="max-h-full max-w-full"/></div>
+                                                            </div>
+                                                        )}
+                                                        <div className="mt-2 pt-2 border-t border-slate-100 px-2 flex justify-end gap-2 text-[10px] text-slate-400">
+                                                            {item.checkedBy && <span className="flex items-center gap-1 text-indigo-500"><BadgeCheck size={10}/> {item.checkedBy} 확인</span>}
+                                                            {item.approvedBy && <span className="flex items-center gap-1 text-emerald-500"><CheckCircle size={10}/> {item.approvedBy} 승인</span>}
                                                         </div>
-                                                        : <div className="flex gap-2">
-                                                            <button onClick={()=>{setRejectingId(item.id); setRejectReason("")}} className="flex-1 border border-rose-200 text-rose-600 bg-white hover:bg-rose-50 text-sm py-3 rounded-xl font-bold transition shadow-sm">반려</button>
-                                                            <button onClick={()=>onUpdateStatus(activeTab, item.id, 'approved')} className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white text-sm py-3 rounded-xl font-bold shadow-lg shadow-emerald-100 transition">승인</button>
-                                                        </div>
-                                                    )}
-                                                    {item.status === 'rejected' && <div className="text-xs text-rose-600 bg-rose-50 p-3 rounded-lg border border-rose-100 font-medium">💡 사유: {item.rejectionReason}</div>}
+                                                        {item.status==='rejected' && <div className="mt-2 text-xs text-rose-600 bg-rose-50 p-2 rounded border border-rose-100 font-bold">반려 사유: {item.rejectionReason} ({item.rejectedBy})</div>}
+                                                    </div>
+                                                    {renderActionButtons(item)}
                                                 </div>
                                             </div>
                                         </div>
@@ -764,131 +898,117 @@
 
         function AdminLoginModal({ isOpen, onClose, onLogin }) {
             const [password, setPassword] = useState('');
-            const [error, setError] = useState(false);
-
+            const [error, setError] = useState('');
             if (!isOpen) return null;
-
-            const handleSubmit = (e) => {
-                e.preventDefault();
-                if (password === ADMIN_PASSWORD) {
-                    onLogin();
-                } else {
-                    setError(true);
-                    setPassword('');
-                }
-            };
-
+            const handleSubmit = (e) => { e.preventDefault(); const roleEntry = ROLES[password]; if (roleEntry) { onLogin(roleEntry.id); } else { setError('비밀번호를 확인해주세요.'); setPassword(''); } };
             return (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md p-6 animate-fade-in">
-                    <div className="bg-white w-full max-w-xs rounded-3xl shadow-2xl p-8 transform transition-all scale-100">
-                        <div className="flex justify-between items-center mb-6">
-                            <h3 className="font-bold text-xl flex items-center gap-2 text-slate-800"><Lock size={22} className="text-indigo-600"/> 관리자 인증</h3>
-                            <button onClick={onClose}><X size={24} className="text-slate-400 hover:text-slate-600 transition"/></button>
-                        </div>
+                    <div className="bg-white w-full max-w-xs rounded-3xl shadow-2xl p-8 relative">
+                        <button onClick={onClose} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600"><X size={24}/></button>
+                        <div className="flex flex-col items-center mb-6"><div className="w-12 h-12 bg-indigo-50 rounded-full flex items-center justify-center mb-3"><UserCheck size={24} className="text-indigo-600"/></div><h3 className="font-bold text-xl text-slate-800">관리자 로그인</h3></div>
                         <form onSubmit={handleSubmit} className="space-y-5">
-                            <div>
-                                <input 
-                                    type="password" 
-                                    className={`w-full p-4 border-2 rounded-xl text-center text-xl tracking-widest outline-none transition-colors ${error ? 'border-rose-400 bg-rose-50 focus:border-rose-500' : 'border-slate-200 focus:border-indigo-500 focus:bg-indigo-50'}`}
-                                    placeholder="••••"
-                                    value={password}
-                                    onChange={(e) => { setPassword(e.target.value); setError(false); }}
-                                    autoFocus
-                                    maxLength={4}
-                                />
-                                {error && <p className="text-xs text-rose-500 text-center mt-3 font-bold flex items-center justify-center gap-1 animate-pulse"><AlertCircle size={12}/> 비밀번호가 일치하지 않습니다.</p>}
-                            </div>
-                            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-4 rounded-xl font-bold shadow-lg shadow-indigo-200 transition active:scale-95">확인</button>
+                            <div><input type="password" className={`w-full p-4 border-2 rounded-xl text-center text-xl tracking-widest outline-none transition-colors ${error?'border-rose-400 bg-rose-50':'border-slate-200 focus:border-indigo-500'}`} placeholder="••••" value={password} onChange={(e)=>{setPassword(e.target.value); setError('');}} autoFocus maxLength={4} inputMode="numeric"/>{error && <p className="text-xs text-rose-500 text-center mt-2 font-bold">{error}</p>}</div>
+                            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-4 rounded-xl font-bold shadow-lg transition active:scale-95">로그인</button>
                         </form>
                     </div>
                 </div>
             );
         }
 
-        function HomeScreen({ onNavigate, isAdmin }) {
+        function HomeScreen({ onNavigate, adminRole, setAdminRole, onOpenAdmin }) {
             return (
-                <div className="p-6 flex flex-col items-center justify-center h-full space-y-6 animate-fade-in bg-gradient-to-b from-white to-slate-50">
-                    <div className="text-center mb-6">
-                        <div className="bg-indigo-50 w-20 h-20 rounded-3xl flex items-center justify-center mx-auto mb-4 shadow-sm">
-                            <ShieldCheck size={40} className="text-indigo-600" />
+                <div className="p-6 md:p-8 flex flex-col items-center justify-center h-full animate-fade-in bg-[radial-gradient(circle_at_top,_#eef2ff,_#f8fafc_42%,_#f1f5f9)]">
+                    <div className="w-full flex flex-col gap-4">
+                        <div className="text-center mb-5">
+                            <div className="bg-white w-24 h-24 rounded-3xl flex items-center justify-center mx-auto mb-4 shadow-md border-2 border-indigo-100">
+                                <ShieldCheck size={46} className="text-indigo-600" />
+                            </div>
+                            <h2 className="text-3xl md:text-4xl font-extrabold tracking-tight text-slate-900 mb-2">환영합니다</h2>
+                            <p className="text-slate-700 text-base md:text-lg font-bold">강동 아이파크 더 리버몰 주차관리실</p>
+                            <p className="text-slate-500 text-sm mt-1">아래 큰 버튼을 눌러 업무를 선택하세요</p>
                         </div>
-                        <h2 className="text-2xl font-bold text-slate-800 mb-2">환영합니다</h2>
-                        <p className="text-slate-500 text-sm">원하시는 서비스를 선택해주세요.</p>
-                    </div>
-                    
-                    <button onClick={()=>onNavigate('construction')} className="w-full group bg-white p-6 rounded-3xl border-2 border-indigo-50 hover:border-indigo-200 shadow-sm hover:shadow-xl hover:shadow-indigo-100 transition-all duration-300 flex items-center gap-5 relative overflow-hidden">
-                        <div className="bg-indigo-100 p-4 rounded-2xl group-hover:scale-110 transition-transform duration-300"><Car size={32} className="text-indigo-600"/></div>
-                        <div className="text-left z-10">
-                            <span className="font-bold text-lg text-slate-800 block mb-1">공사/방문 등록</span>
-                            <span className="text-xs text-slate-500 font-medium">일반 방문 및 공사 차량</span>
-                        </div>
-                        <div className="absolute right-0 top-0 bottom-0 w-1/3 bg-gradient-to-l from-indigo-50/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"/>
-                    </button>
-
-                    <button onClick={()=>onNavigate('regular')} className="w-full group bg-white p-6 rounded-3xl border-2 border-emerald-50 hover:border-emerald-200 shadow-sm hover:shadow-xl hover:shadow-emerald-100 transition-all duration-300 flex items-center gap-5 relative overflow-hidden">
-                        <div className="bg-emerald-100 p-4 rounded-2xl group-hover:scale-110 transition-transform duration-300"><FileText size={32} className="text-emerald-600"/></div>
-                        <div className="text-left z-10">
-                            <span className="font-bold text-lg text-slate-800 block mb-1">정기권 신청</span>
-                            <span className="text-xs text-slate-500 font-medium">입주민 및 직원 정기 등록</span>
-                        </div>
-                        <div className="absolute right-0 top-0 bottom-0 w-1/3 bg-gradient-to-l from-emerald-50/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"/>
-                    </button>
-
-                    <button onClick={()=>onNavigate('statusCheck')} className="w-full bg-white p-4 rounded-2xl border border-slate-200 flex items-center justify-center gap-2 hover:bg-slate-50 transition active:scale-95 text-slate-600 font-bold shadow-sm">
-                        <Search size={20}/>
-                        <span>신청 내역 조회 / 수정</span>
-                    </button>
-
-                    {isAdmin && (
-                        <button onClick={()=>onNavigate('admin')} className="w-full mt-4 bg-slate-800 hover:bg-slate-900 text-white p-4 rounded-2xl flex items-center justify-center gap-3 shadow-xl shadow-slate-200 transition active:scale-95">
-                            <ShieldCheck size={20}/>
-                            <span className="font-bold">관리자 대시보드</span>
+                        <button onClick={()=>onNavigate('construction')} className="w-full group bg-white p-6 md:p-7 rounded-3xl border-2 border-indigo-200 hover:border-indigo-400 shadow-md hover:shadow-xl hover:shadow-indigo-100 transition-all duration-300 flex items-center gap-5 relative overflow-hidden min-h-[110px]">
+                            <div className="bg-indigo-600 p-4 rounded-2xl shadow-md group-hover:scale-105 transition-transform duration-300"><Car size={38} className="text-white"/></div>
+                            <div className="text-left z-10">
+                                <span className="font-extrabold text-2xl md:text-[28px] text-slate-900 leading-tight block mb-1">공사/방문 등록</span>
+                                <span className="text-base text-slate-600 font-semibold">일반 방문 및 공사 차량</span>
+                            </div>
                         </button>
-                    )}
+                        <button onClick={()=>onNavigate('regular')} className="w-full group bg-white p-6 md:p-7 rounded-3xl border-2 border-emerald-200 hover:border-emerald-400 shadow-md hover:shadow-xl hover:shadow-emerald-100 transition-all duration-300 flex items-center gap-5 relative overflow-hidden min-h-[110px]">
+                            <div className="bg-emerald-600 p-4 rounded-2xl shadow-md group-hover:scale-105 transition-transform duration-300"><FileText size={38} className="text-white"/></div>
+                            <div className="text-left z-10">
+                                <span className="font-extrabold text-2xl md:text-[28px] text-slate-900 leading-tight block mb-1">정기권 신청</span>
+                                <span className="text-base text-slate-600 font-semibold">입주민 및 직원 정기 등록</span>
+                            </div>
+                        </button>
+                        <button onClick={()=>onNavigate('statusCheck')} className="w-full bg-white p-5 rounded-2xl border-2 border-slate-300 flex items-center justify-center gap-3 hover:bg-slate-50 transition active:scale-95 text-slate-700 font-extrabold text-lg shadow-sm">
+                            <Search size={24}/><span>신청 내역 조회</span>
+                        </button>
+                        {adminRole ? (
+                            <button onClick={()=>onNavigate('admin')} className="w-full bg-slate-800 hover:bg-slate-900 text-white p-5 rounded-2xl flex items-center justify-center gap-3 shadow-xl shadow-slate-200 transition active:scale-95 border border-slate-700">
+                                <UserCheck size={24}/>
+                                <div className="text-left"><span className="block text-xs text-slate-300 font-normal">현재 접속중</span><span className="font-extrabold text-lg">{ROLES[Object.keys(ROLES).find(k => ROLES[k].id === adminRole)].name} 관리모드</span></div>
+                            </button>
+                        ) : (
+                            <button onClick={onOpenAdmin} className="w-full bg-white hover:bg-slate-50 text-slate-600 p-5 rounded-2xl flex items-center justify-center gap-2 border-2 border-slate-300 shadow-sm transition"><Lock size={20}/><span className="font-extrabold text-lg">관리자 로그인</span></button>
+                        )}
+                    </div>
                 </div>
             )
         }
 
-        // --- 폼 컴포넌트 UI 개선 ---
-        const FormInput = ({ label, ...props }) => (
-            <div className="mb-4">
-                <label className="block text-xs font-bold text-slate-500 mb-1.5 ml-1">{label}</label>
-                <input {...props} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all placeholder:text-slate-400 text-sm font-medium disabled:bg-slate-100 disabled:text-slate-400" />
-            </div>
-        );
-
-        function ConstructionForm({ onBack, onSubmit, initialData }) {
-            const [visitPurpose, setVisitPurpose] = useState('공사');
-            const [formData, setFormData] = useState({ companyName:'', visitorName:'', visitUnit:'', location:'', driverPhone:'', startDate:'', endDate:'', startTime:'09:00', endTime:'18:00', vehicles:[''] });
-            const [submitWarning, setSubmitWarning] = useState('');
-            useEffect(() => { if(initialData) { setVisitPurpose(initialData.visitPurpose); setFormData({...initialData, visitorName: initialData.visitorName || ''}); } }, [initialData]);
-            useEffect(() => { if(visitPurpose==='부동산') { if(formData.startDate) setFormData(p=>({...p, endDate:p.startDate})); if(formData.startTime) { const [h,m]=formData.startTime.split(':').map(Number); const eH=h+2; const eS=eH>=24?'23:59':`${String(eH).padStart(2,'0')}:${String(m).padStart(2,'0')}`; if(formData.endTime!==eS) setFormData(p=>({...p, endTime:eS})); } } }, [visitPurpose, formData.startDate, formData.startTime]);
+        // 공사/방문 등록 폼 - 차량 입력 간소화 및 상태 라벨 수정
+        function ConstructionForm({ onBack, onSubmit, initialData, userRole }) {
+            const allowedPurposes = useMemo(() => {
+                if (userRole === 'SAFETY') return ['공사', '기타'];
+                if (userRole === 'CENTER') return ['기타'];
+                return ['공사', '부동산', '기타'];
+            }, [userRole]);
+            const [visitPurpose, setVisitPurpose] = useState(allowedPurposes[0]);
+            const today = new Date().toISOString().split('T')[0];
+            const [formData, setFormData] = useState({ companyName:'', visitorName:'', visitUnit:'', location:'', driverPhone:'', startDate: today, endDate: today, startTime:'09:00', endTime:'18:00', vehicles:[''], signature: null });
             
+            useEffect(() => { 
+                if(initialData) { 
+                    setVisitPurpose(initialData.visitPurpose); 
+                    setFormData({...initialData}); 
+                } else {
+                    setVisitPurpose(allowedPurposes[0]);
+                }
+            }, [initialData, allowedPurposes]);
+
+            useEffect(() => { 
+                if(visitPurpose==='부동산') { 
+                    if(formData.startDate) setFormData(p=>({...p, endDate:p.startDate})); 
+                    if(formData.startTime) { 
+                        const [h,m]=formData.startTime.split(':').map(Number); 
+                        const eH=h+2; 
+                        const eS=eH>=24?'23:59':`${String(eH).padStart(2,'0')}:${String(m).padStart(2,'0')}`; 
+                        if(formData.endTime!==eS) setFormData(p=>({...p, endTime:eS})); 
+                    } 
+                } 
+            }, [visitPurpose, formData.startDate, formData.startTime]);
+
             return (
                 <div className="flex flex-col h-full bg-white">
-                    <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-3 sticky top-0 bg-white/90 backdrop-blur-md z-10">
+                    <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-3 shrink-0 bg-white z-10">
                         <button onClick={onBack} className="p-2 -ml-2 rounded-full hover:bg-slate-50"><ArrowLeft className="text-slate-600"/></button>
                         <h2 className="text-xl font-bold text-slate-800">공사/방문 등록</h2>
                     </div>
-                    <div className="flex-1 overflow-y-auto p-5 pb-24">
-                        <form onSubmit={async e=>{e.preventDefault(); setSubmitWarning(''); const cleanedVehicles = formData.vehicles.map(v => v.trim().toUpperCase()).filter(Boolean); const result = await onSubmit({...formData, visitPurpose, vehicles: cleanedVehicles}); if (result && result.ok === false && result.reason === 'overlap') setSubmitWarning(result.message || '중복 신청으로 접수할 수 없습니다.');}}>
+                    <form onSubmit={e=>{e.preventDefault(); onSubmit({...formData, visitPurpose});}} className="flex flex-col flex-1 overflow-hidden">
+                        <div className="flex-1 overflow-y-auto p-5">
                             <div className="mb-6">
                                 <label className="block text-sm font-bold text-slate-800 mb-3">방문 목적</label>
-                                <div className="grid grid-cols-3 gap-2 bg-slate-100 p-1.5 rounded-2xl">
-                                    {['공사','부동산','기타'].map(t=><button key={t} type="button" onClick={()=>setVisitPurpose(t)} className={`py-2.5 text-sm rounded-xl font-bold transition-all ${visitPurpose===t?'bg-white shadow text-indigo-600':'text-slate-500 hover:text-slate-700'}`}>{t}</button>)}
+                                <div className="flex gap-2 bg-slate-100 p-1.5 rounded-2xl">
+                                    {allowedPurposes.map(t=>(<button key={t} type="button" onClick={()=>setVisitPurpose(t)} className={`flex-1 py-2.5 text-sm rounded-xl font-bold transition-all ${visitPurpose===t?'bg-white shadow text-indigo-600':'text-slate-500 hover:text-slate-700'}`}>{t}</button>))}
                                 </div>
                                 {visitPurpose==='부동산'&&<p className="text-xs text-indigo-500 mt-2 font-medium flex items-center gap-1"><Clock size={12}/> 부동산은 2시간 제한됩니다.</p>}
                             </div>
                             <div className="space-y-1">
                                 <FormInput label="업체명" required value={formData.companyName} onChange={e=>setFormData({...formData, companyName:e.target.value})} placeholder={visitPurpose === '기타' ? "" : (visitPurpose === '공사' ? "예: OO인테리어" : "예: 행복부동산")}/>
                                 <FormInput label="방문자 성명" required value={formData.visitorName} onChange={e=>setFormData({...formData, visitorName:e.target.value})} placeholder={visitPurpose === '기타' ? "" : "홍길동"}/>
-                                <FormInput label="방문 호수" required value={formData.visitUnit} onChange={e=>setFormData({...formData, visitUnit:e.target.value})} placeholder="예: 101호"/>
-                                <FormInput 
-                                    label={visitPurpose === '공사' ? '작업 내용' : '방문 내용'}
-                                    value={formData.location} 
-                                    onChange={e=>setFormData({...formData, location:e.target.value})}
-                                    placeholder={visitPurpose === '기타' ? "" : (visitPurpose === '공사' ? '예: 인테리어 공사' : '예: 매물 확인')}
-                                />
+                                <FormInput label="방문 호수" required value={formData.visitUnit} onChange={e=>setFormData({...formData, visitUnit:e.target.value.replace(/[^0-9]/g, '')})} placeholder="예: 101"/>
+                                <FormInput label="내용" value={formData.location} onChange={e=>setFormData({...formData, location:e.target.value})} placeholder={visitPurpose === '공사' ? '예: 인테리어 공사' : '예: 매물 확인'}/>
                                 <FormInput label="연락처" type="tel" required value={formData.driverPhone} onChange={e=>setFormData({...formData, driverPhone:e.target.value.replace(/[^0-9]/g,'')})} placeholder="01012345678"/>
                             </div>
                             
@@ -907,28 +1027,52 @@
                             <div className="mb-6">
                                 <label className="text-sm font-bold text-slate-800 mb-2 block">차량 번호</label>
                                 <div className="space-y-2">
-                                    {formData.vehicles.map((v,i)=><div key={i} className="flex gap-2"><input className="flex-1 p-3 border border-slate-200 rounded-xl bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none font-bold tracking-wider" value={v} onChange={e=>{const n=[...formData.vehicles];n[i]=e.target.value;setFormData({...formData, vehicles:n})}} required placeholder="12가3456"/>{formData.vehicles.length>1&&<button type="button" onClick={()=>{const n=[...formData.vehicles];n.splice(i,1);setFormData({...formData, vehicles:n})}} className="px-3 text-rose-500 bg-rose-50 rounded-xl hover:bg-rose-100"><Trash2 size={18}/></button>}</div>)}
+                                    {/* 차량 1대만 입력받도록 수정 */}
+                                    <div className="flex gap-2">
+                                        <input 
+                                            className="flex-1 p-3 border border-slate-200 rounded-xl bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none font-bold tracking-wider" 
+                                            value={formData.vehicles[0] || ''} 
+                                            onChange={e=>{
+                                                const val = e.target.value.replace(/\s/g, '');
+                                                setFormData({...formData, vehicles:[val]})
+                                            }} 
+                                            required 
+                                            placeholder="12가3456"
+                                        />
+                                    </div>
+                                    <p className="text-xs text-slate-400 mt-1">※ 차량은 1대만 입력 가능합니다.</p>
                                 </div>
-                                <button type="button" onClick={()=>setFormData({...formData, vehicles:[...formData.vehicles, '']})} className="mt-3 text-indigo-600 text-sm font-bold flex items-center gap-1 hover:bg-indigo-50 px-3 py-2 rounded-lg transition"><Plus size={16}/> 차량 추가하기</button>
                             </div>
-                            
-                            {submitWarning && <div className="p-4 rounded-xl border border-rose-200 bg-rose-50 text-rose-700 text-sm font-medium whitespace-pre-line mb-6 flex items-start gap-2"><AlertCircle size={16} className="mt-0.5 shrink-0"/>{submitWarning}</div>}
-                            
-                            <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t border-slate-100 md:max-w-md md:mx-auto">
-                                <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-4 rounded-2xl font-bold shadow-xl shadow-indigo-200 transition active:scale-95 text-lg">{initialData?'수정하기':'신청하기'}</button>
+
+                            <div className="mb-6">
+                                <div className="flex justify-between items-end mb-2">
+                                    <label className="text-sm font-bold text-slate-800 flex items-center gap-2"><PenTool size={16}/> 서명</label>
+                                    <span className="text-xs font-bold text-slate-500">{getFormattedDate()}</span>
+                                </div>
+                                <SignaturePad onSave={(data) => setFormData(prev => ({...prev, signature: data}))} initialData={formData.signature} />
                             </div>
-                        </form>
-                    </div>
+
+                            <div className="mt-4 mb-6 p-4 bg-slate-50 rounded-xl border border-slate-200">
+                                <h4 className="font-bold text-sm text-slate-700 mb-2 flex items-center gap-1"><AlertCircle size={14} className="text-rose-500"/> 유의사항</h4>
+                                <ul className="list-decimal list-inside text-xs text-slate-600 space-y-1 break-keep">
+                                    <li>차량번호 및 상세정보를 정확히 기입바라며, 거짓이 있을 경우 불이익이 발생할 수 있습니다.</li>
+                                    <li>등록차량은 <span className="text-rose-600 font-bold">B2층</span>에 주차하고 수칙을 준수해야 합니다.</li>
+                                    <li>차량은 <span className="text-rose-600 font-bold">매장별 3대</span>로 제한하고, 현장 상황에 따라 변경될 수 있습니다.</li>
+                                </ul>
+                                <p className="text-[10px] text-slate-400 mt-2 text-right">아래 내용을 준수하지 않으면 주차를 거부할 수 있습니다.</p>
+                            </div>
+                        </div>
+                        <div className="p-4 border-t border-slate-100 bg-white shrink-0 safe-area-bottom"><button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-4 rounded-2xl font-bold shadow-xl shadow-indigo-200 transition active:scale-95">{initialData?'수정하기':'신청하기'}</button></div>
+                    </form>
                 </div>
             );
         }
 
-        function RegularTicketForm({ onBack, onSubmit, initialData }) {
+        function RegularTicketForm({ onBack, onSubmit, initialData, userRole }) {
             const [appType, setAppType] = useState('new');
-            const [formData, setFormData] = useState({ name:'', department:'', phone:'', carNumber:'', oldCarNumber:'', unitNumber:'', registrationImg:null, idCardImg:null });
-            const regFileRef = useRef(null);
-            const idFileRef = useRef(null);
-
+            const [formData, setFormData] = useState({ name:'', department:'', phone:'', carNumber:'', oldCarNumber:'', unitNumber:'', registrationImg:null, idCardImg:null, signature: null, changeReason: '' });
+            const regFileRef = useRef(null); const idFileRef = useRef(null);
+            
             useEffect(() => { if(initialData) { setAppType(initialData.applicationType); setFormData({...initialData}); } }, [initialData]);
             
             const handleCompressedFile = (field, file) => {
@@ -942,7 +1086,8 @@
                         let width = img.width; let height = img.height;
                         if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; }
                         canvas.width = width; canvas.height = height;
-                        const ctx = canvas.getContext('2d'); ctx.drawImage(img, 0, 0, width, height);
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, width, height);
                         const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
                         setFormData(p => ({...p, [field]: dataUrl}));
                     };
@@ -953,12 +1098,9 @@
 
             return (
                 <div className="flex flex-col h-full bg-white">
-                    <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-3 sticky top-0 bg-white/90 backdrop-blur-md z-10">
-                        <button onClick={onBack} className="p-2 -ml-2 rounded-full hover:bg-slate-50"><ArrowLeft className="text-slate-600"/></button>
-                        <h2 className="text-xl font-bold text-slate-800">정기권 신청</h2>
-                    </div>
-                    <div className="flex-1 overflow-y-auto p-5 pb-24">
-                        <form onSubmit={e=>{e.preventDefault(); onSubmit({...formData, applicationType:appType})}}>
+                    <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-3 shrink-0 bg-white z-10"><button onClick={onBack} className="p-2 -ml-2 rounded-full hover:bg-slate-50"><ArrowLeft className="text-slate-600"/></button><h2 className="text-xl font-bold text-slate-800">정기권 신청</h2></div>
+                    <form onSubmit={e=>{e.preventDefault(); onSubmit({...formData, applicationType:appType})}} className="flex flex-col flex-1 overflow-hidden">
+                        <div className="flex-1 overflow-y-auto p-5">
                             <div className="mb-6">
                                 <label className="block text-sm font-bold text-slate-800 mb-3">신청 유형</label>
                                 <div className="flex gap-2 bg-slate-100 p-1.5 rounded-2xl">
@@ -966,51 +1108,41 @@
                                     <button type="button" onClick={()=>setAppType('change')} className={`flex-1 py-2.5 text-sm rounded-xl font-bold transition-all ${appType==='change'?'bg-white shadow text-emerald-600':'text-slate-500 hover:text-slate-700'}`}>변경</button>
                                 </div>
                             </div>
-                            {appType==='change' && <div className="p-4 bg-emerald-50 rounded-2xl border border-emerald-100 mb-6"><FormInput label="기존 차량번호" required value={formData.oldCarNumber} onChange={e=>setFormData({...formData, oldCarNumber:e.target.value})} className="bg-white" /></div>}
+                            
+                            {appType==='change' && <div className="space-y-4 mb-6 p-4 bg-emerald-50 rounded-2xl border border-emerald-100"><FormInput label="기존 차량번호" required value={formData.oldCarNumber} onChange={e=>setFormData({...formData, oldCarNumber:e.target.value.replace(/\s/g, '')})} className="bg-white" placeholder="예: 12가3456" /><FormInput label="변경 사유" required value={formData.changeReason} onChange={e=>setFormData({...formData, changeReason:e.target.value})} placeholder="예: 차량 매매, 파손 등" className="bg-white" /></div>}
+                            
                             <div className="space-y-1">
-                                <FormInput label="성명" required value={formData.name} onChange={e=>setFormData({...formData, name:e.target.value})}/>
-                                <FormInput label="소속" required value={formData.department} onChange={e=>setFormData({...formData, department:e.target.value})}/>
-                                <FormInput label="연락처" type="tel" required value={formData.phone} onChange={e=>setFormData({...formData, phone:e.target.value.replace(/[^0-9]/g,'')})}/>
+                                <FormInput label="성명" required value={formData.name} onChange={e=>setFormData({...formData, name:e.target.value})} placeholder="홍길동"/>
+                                <FormInput label="소속" required value={formData.department} onChange={e=>setFormData({...formData, department:e.target.value})} placeholder="예: 관리사무소"/>
+                                <FormInput label="연락처" type="tel" required value={formData.phone} onChange={e=>setFormData({...formData, phone:e.target.value.replace(/[^0-9]/g,'')})} placeholder="01012345678"/>
                                 <div className="grid grid-cols-2 gap-3">
-                                    <FormInput label={appType==='change'?'변경할 차량':'차량번호'} required value={formData.carNumber} onChange={e=>setFormData({...formData, carNumber:e.target.value})} className="bg-amber-50 border-amber-200 focus:ring-amber-500 focus:border-amber-500"/>
-                                    <FormInput label="호수" required value={formData.unitNumber} onChange={e=>setFormData({...formData, unitNumber:e.target.value})}/>
+                                    <FormInput label={appType==='change'?'변경할 차량':'차량번호'} required value={formData.carNumber} onChange={e=>setFormData({...formData, carNumber:e.target.value.replace(/\s/g, '')})} className="bg-amber-50 border-amber-200 focus:ring-amber-500 focus:border-amber-500" placeholder="12가3456"/>
+                                    <FormInput label="호수" required value={formData.unitNumber} onChange={e=>setFormData({...formData, unitNumber:e.target.value.replace(/[^0-9]/g, '')})} placeholder="예: 101"/>
                                 </div>
                             </div>
 
                             <div className="mt-6 space-y-4">
                                 <h3 className="text-sm font-bold text-slate-800">증빙 서류 첨부</h3>
                                 <div className="grid grid-cols-2 gap-4">
-                                    {/* 차량등록증 */}
                                     <div className="bg-slate-50 p-3 rounded-2xl border border-slate-100 flex flex-col">
                                         <div className="text-xs font-bold text-slate-500 mb-2 text-center">차량등록증</div>
                                         {formData.registrationImg ? (
-                                            <div className="relative group aspect-[4/3]">
-                                                <img src={formData.registrationImg} className="w-full h-full object-cover rounded-xl border border-slate-200 shadow-sm"/>
-                                                <button type="button" onClick={()=>setFormData(p=>({...p, registrationImg:null}))} className="absolute top-1 right-1 bg-black/50 text-white p-1 rounded-full hover:bg-black/70"><X size={14}/></button>
-                                            </div>
+                                            <div className="relative group aspect-[4/3]"><img src={formData.registrationImg} className="w-full h-full object-cover rounded-xl border border-slate-200 shadow-sm"/><button type="button" onClick={()=>setFormData(p=>({...p, registrationImg:null}))} className="absolute top-1 right-1 bg-black/50 text-white p-1 rounded-full hover:bg-black/70"><X size={14}/></button></div>
                                         ) : (
                                             <label className="flex-1 flex flex-col gap-2 justify-center items-center cursor-pointer bg-white border border-dashed border-slate-300 rounded-xl hover:bg-slate-50 transition p-2">
-                                                <div className="w-10 h-10 bg-slate-100 rounded-full flex items-center justify-center text-slate-400">
-                                                    <UploadCloud size={20}/>
-                                                </div>
+                                                <UploadCloud size={20} className="text-slate-400"/>
                                                 <span className="text-xs font-bold text-slate-500">사진 첨부</span>
                                                 <input ref={regFileRef} type="file" accept="image/*" className="hidden" onChange={e=>handleCompressedFile('registrationImg', e.target.files[0])}/>
                                             </label>
                                         )}
                                     </div>
-                                    {/* 사원증 */}
                                     <div className="bg-slate-50 p-3 rounded-2xl border border-slate-100 flex flex-col">
                                         <div className="text-xs font-bold text-slate-500 mb-2 text-center">사원증</div>
                                         {formData.idCardImg ? (
-                                            <div className="relative group aspect-[4/3]">
-                                                <img src={formData.idCardImg} className="w-full h-full object-cover rounded-xl border border-slate-200 shadow-sm"/>
-                                                <button type="button" onClick={()=>setFormData(p=>({...p, idCardImg:null}))} className="absolute top-1 right-1 bg-black/50 text-white p-1 rounded-full hover:bg-black/70"><X size={14}/></button>
-                                            </div>
+                                            <div className="relative group aspect-[4/3]"><img src={formData.idCardImg} className="w-full h-full object-cover rounded-xl border border-slate-200 shadow-sm"/><button type="button" onClick={()=>setFormData(p=>({...p, idCardImg:null}))} className="absolute top-1 right-1 bg-black/50 text-white p-1 rounded-full hover:bg-black/70"><X size={14}/></button></div>
                                         ) : (
                                             <label className="flex-1 flex flex-col gap-2 justify-center items-center cursor-pointer bg-white border border-dashed border-slate-300 rounded-xl hover:bg-slate-50 transition p-2">
-                                                <div className="w-10 h-10 bg-slate-100 rounded-full flex items-center justify-center text-slate-400">
-                                                    <UploadCloud size={20}/>
-                                                </div>
+                                                <UploadCloud size={20} className="text-slate-400"/>
                                                 <span className="text-xs font-bold text-slate-500">사진 첨부</span>
                                                 <input ref={idFileRef} type="file" accept="image/*" className="hidden" onChange={e=>handleCompressedFile('idCardImg', e.target.files[0])}/>
                                             </label>
@@ -1018,52 +1150,103 @@
                                     </div>
                                 </div>
                             </div>
-                            
-                            <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t border-slate-100 md:max-w-md md:mx-auto">
-                                <button type="submit" className="w-full bg-emerald-500 hover:bg-emerald-600 text-white py-4 rounded-2xl font-bold shadow-xl shadow-emerald-200 transition active:scale-95 text-lg">{initialData?'수정하기':'신청하기'}</button>
+
+                            <div className="mt-6 mb-6">
+                                <div className="flex justify-between items-end mb-2">
+                                    <label className="text-sm font-bold text-slate-800 flex items-center gap-2"><PenTool size={16}/> 서명</label>
+                                    <span className="text-xs font-bold text-slate-500">{getFormattedDate()}</span>
+                                </div>
+                                <SignaturePad onSave={(data) => setFormData(prev => ({...prev, signature: data}))} initialData={formData.signature} />
                             </div>
-                        </form>
-                    </div>
+
+                            <div className="mt-4 mb-6 p-4 bg-slate-50 rounded-xl border border-slate-200">
+                                <h4 className="font-bold text-sm text-slate-700 mb-2 flex items-center gap-1"><AlertCircle size={14} className="text-rose-500"/> 유의사항</h4>
+                                <ul className="list-decimal list-inside text-xs text-slate-600 space-y-1 break-keep">
+                                    <li>아래 내용 미준수 시 요금이 부과될 수 있습니다.</li>
+                                    <li>차량번호와 상세정보를 정확히 기재해야 합니다. 오기재에 대한 책임은 신청자에게 있습니다.</li>
+                                    <li>정기주차는 <span className="text-rose-600 font-bold">주말 및 공휴일을 제외한 평일주차</span>만 가능합니다.</li>
+                                    <li>신규등록은 월말 업체 담당자를 통해 명단을 통해 가능하며, 일할 결제는 불가합니다.</li>
+                                    <li>이용기간 중 차량번호 변경은 불가합니다. (단, 사고발생으로 인한 대차사용시 관련정보 첨부 후 가능)</li>
+                                    <li>정기권 이용수칙 위반 3회 적발 시 <span className="text-rose-600 font-bold">3개월간 정기권 등록 불가</span>합니다.</li>
+                                    <li>정기권 신청 및 구매는 주차안내문 내용 참조</li>
+                                </ul>
+                                <p className="text-[10px] text-slate-400 mt-2 text-right">위 내용을 숙지하였으며 준수할 것을 서약합니다.</p>
+                            </div>
+                        </div>
+                        <div className="p-4 border-t border-slate-100 bg-white shrink-0 safe-area-bottom"><button type="submit" className="w-full bg-emerald-500 hover:bg-emerald-600 text-white py-4 rounded-2xl font-bold shadow-xl shadow-emerald-200 transition active:scale-95">{initialData?'수정하기':'신청하기'}</button></div>
+                    </form>
                 </div>
             );
         }
 
         function StatusCheckScreen({ onBack, submissions, onEdit }) {
             const [name, setName] = useState(''); const [car, setCar] = useState(''); const [res, setRes] = useState(null);
+            const formatDateTime = (value) => {
+                if (!value) return '-';
+                const d = new Date(value);
+                if (Number.isNaN(d.getTime())) return '-';
+                return d.toLocaleString('ko-KR', {
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+            };
+            const isVisibleInStatusCheck = (item) => {
+                const now = new Date();
+                let baseDate = null;
+
+                if (item.type === 'construction' && item.endDate) {
+                    const endDt = new Date(`${item.endDate}T${item.endTime || '23:59'}`);
+                    if (!Number.isNaN(endDt.getTime())) baseDate = endDt;
+                }
+                if (!baseDate) {
+                    const submitted = new Date(item.submittedAt || item.updatedAt || 0);
+                    if (Number.isNaN(submitted.getTime())) return false;
+                    baseDate = submitted;
+                }
+
+                const expireAt = new Date(baseDate);
+                if (item.type === 'construction') {
+                    // 공사/방문차량: 종료시각 기준 1일 후 만료
+                    expireAt.setDate(expireAt.getDate() + 1);
+                } else {
+                    // 정기권: 신청일시 기준 1개월 후 만료
+                    expireAt.setMonth(expireAt.getMonth() + 1);
+                }
+                return now <= expireAt;
+            };
             const search = (e) => {
-                e.preventDefault(); if(!name.trim() || !car.trim()) return alert("정보를 입력하세요");
-                const c = submissions.construction.filter(i => (i.companyName===name || i.visitorName===name) && i.vehicles.some(v=>v.includes(car)));
-                const r = submissions.regular.filter(i => i.name===name && i.carNumber.includes(car));
+                e.preventDefault();
+                const c = submissions.construction.filter(i => isVisibleInStatusCheck(i) && (i.companyName===name || i.visitorName===name) && i.vehicles.some(v=>v.includes(car)));
+                const r = submissions.regular.filter(i => isVisibleInStatusCheck(i) && i.name===name && i.carNumber.includes(car));
                 setRes([...c, ...r]);
             };
             return (
                 <div className="flex flex-col h-full bg-slate-50">
-                    <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-3 bg-white sticky top-0 z-10">
-                        <button onClick={onBack} className="p-2 -ml-2 rounded-full hover:bg-slate-50"><ArrowLeft className="text-slate-600"/></button>
-                        <h2 className="text-xl font-bold text-slate-800">신청 내역 조회</h2>
-                    </div>
+                    <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-3 bg-white sticky top-0 z-10"><button onClick={onBack} className="p-2 -ml-2 rounded-full hover:bg-slate-50"><ArrowLeft className="text-slate-600"/></button><h2 className="text-xl font-bold text-slate-800">신청 내역 조회</h2></div>
                     <div className="p-5">
-                        <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 mb-6">
-                            <form onSubmit={search} className="space-y-3">
-                                <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500" placeholder="성명 또는 업체명" value={name} onChange={e=>setName(e.target.value)}/>
-                                <input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500" placeholder="차량번호" value={car} onChange={e=>setCar(e.target.value)}/>
-                                <button className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold shadow-lg shadow-indigo-200 active:scale-95 transition">조회하기</button>
-                            </form>
-                        </div>
-                        
+                        <form onSubmit={search} className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 mb-6 space-y-3"><input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm" placeholder="성명 또는 업체명" value={name} onChange={e=>setName(e.target.value)}/><input className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm" placeholder="차량번호" value={car} onChange={e=>setCar(e.target.value)}/><button className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold">조회하기</button></form>
                         <div className="space-y-4">
-                            {res && res.length === 0 && <div className="text-center text-slate-400 py-4">조회 결과가 없습니다.</div>}
                             {res && res.map(i => (
                                 <div key={i.id} className={`bg-white p-5 rounded-2xl shadow-sm border-l-4 ${getStatusBorder(i.status)}`}>
                                     <div className="flex justify-between items-start mb-2">
-                                        <span className="font-bold text-lg text-slate-800">{i.type==='construction'?`[${i.visitPurpose}] ${i.companyName}`:'정기권 신청'}</span>
-                                        <span className={`px-2.5 py-1 rounded-full text-xs font-bold border ${getStatusColor(i.status)}`}>{getStatusLabel(i.status)}</span>
+                                        <span className="font-bold text-slate-800">{i.type==='construction'?i.companyName:i.name}</span>
+                                        <span className={`px-2 py-1 rounded text-xs font-bold ${getStatusColor(i.status)}`}>{getStatusLabel(i.status)}</span>
                                     </div>
-                                    <div className="text-sm text-slate-600 space-y-1 mb-3">
-                                        {i.type === 'construction' ? <><p>방문자: {i.visitorName}</p><p>장소: {i.location} ({i.visitUnit}호)</p></> : <><p>차량: {i.carNumber}</p><p>신청자: {i.name}</p></>}
+                                    <div className="text-sm text-slate-600 mb-3">{i.type==='construction'?i.vehicles[0]:i.carNumber}</div>
+                                    <div className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-2 mb-3 space-y-1">
+                                        <div><span className="font-bold text-slate-700">신청일시:</span> {formatDateTime(i.submittedAt)}</div>
+                                        {i.status === 'approved' && <div><span className="font-bold text-emerald-700">승인일시:</span> {formatDateTime(i.approvedAt || i.updatedAt)}</div>}
+                                        {i.status === 'rejected' && <div><span className="font-bold text-rose-700">반려일시:</span> {formatDateTime(i.rejectedAt || i.updatedAt)}</div>}
                                     </div>
-                                    {i.status==='rejected' && <div className="bg-rose-50 text-rose-600 text-xs p-3 rounded-xl border border-rose-100 mb-3">반려 사유: {i.rejectionReason}</div>}
-                                    {i.status!=='approved' && <button onClick={()=>onEdit(i)} className="w-full py-2.5 border border-indigo-200 text-indigo-600 rounded-xl text-sm font-bold hover:bg-indigo-50 transition">수정하기</button>}
+                                    {i.status === 'rejected' && (
+                                        <div className="text-xs text-rose-700 bg-rose-50 border border-rose-100 rounded-lg p-2 mb-3 font-semibold">
+                                            반려 사유: {i.rejectionReason || '사유 미입력'}{i.rejectedBy ? ` (${i.rejectedBy})` : ''}
+                                        </div>
+                                    )}
+                                    {i.status!=='approved' && i.status!=='checked' && <button onClick={()=>onEdit(i)} className="w-full py-2 border border-slate-200 rounded-lg text-sm">수정하기</button>}
                                 </div>
                             ))}
                         </div>
@@ -1075,12 +1258,8 @@
         function SuccessScreen({ type, onHome }) {
             return (
                 <div className="flex flex-col items-center justify-center h-full bg-white p-6 text-center animate-scale-in">
-                    <div className="w-24 h-24 bg-emerald-100 rounded-full flex items-center justify-center mb-6 animate-bounce">
-                        <CheckCircle size={48} className="text-emerald-500"/>
-                    </div>
-                    <h2 className="text-2xl font-bold text-slate-800 mb-2">신청 완료!</h2>
-                    <p className="text-slate-500 mb-8">{type} 접수가 정상적으로 처리되었습니다.<br/>관리자 승인 후 효력이 발생합니다.</p>
-                    <button onClick={onHome} className="w-full max-w-xs bg-slate-800 text-white py-4 rounded-2xl font-bold shadow-xl shadow-slate-200 transition hover:bg-slate-900 active:scale-95">홈으로 돌아가기</button>
+                    <div className="w-24 h-24 bg-emerald-100 rounded-full flex items-center justify-center mb-6"><CheckCircle size={48} className="text-emerald-500"/></div>
+                    <h2 className="text-2xl font-bold text-slate-800 mb-2">신청 완료!</h2><p className="text-slate-500 mb-8">관리자 승인 후 주차가 가능합니다.</p><button onClick={onHome} className="w-full max-w-xs bg-slate-800 text-white py-4 rounded-2xl font-bold">확인</button>
                 </div>
             )
         }
