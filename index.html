@@ -45,7 +45,6 @@
             "react": "https://esm.sh/react@18.2.0",
             "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
             "lucide-react": "https://esm.sh/lucide-react@0.263.1?deps=react@18.2.0",
-            "jszip": "https://esm.sh/jszip@3.10.1",
             "jspdf": "https://esm.sh/jspdf@2.5.1"
         }
     }
@@ -82,11 +81,19 @@
     <script type="text/babel" data-type="module">
         import React, { useState, useEffect, useRef, useMemo } from 'react';
         import { createRoot } from 'react-dom/client';
-        import { Car, FileText, ArrowLeft, Trash2, ShieldCheck, X, Download, AlertCircle, Search, Clock, Lock, ChevronRight, UploadCloud, CheckCircle, Bell, UserCheck, BadgeCheck, PenTool, RotateCw, Archive, Briefcase } from 'lucide-react';
-        import JSZip from 'jszip';
+        import { Car, FileText, ArrowLeft, Trash2, ShieldCheck, X, Download, AlertCircle, Search, Clock, Lock, ChevronRight, UploadCloud, CheckCircle, Bell, UserCheck, BadgeCheck, PenTool, RotateCw, Briefcase } from 'lucide-react';
         import { jsPDF } from 'jspdf';
 
         const LOCAL_STORAGE_KEY = 'parking_submissions_full_v3';
+        const STATUS_CHECK_RETENTION = { constructionDays: 1, regularMonths: 1 };
+        const STORAGE_RETENTION = { constructionDays: 7, regularMonths: 1 };
+        const FINAL_APPROVER_SIGNATURE_TEXT = '주차관제실';
+        const OFFICIAL_FOOTER_TITLE = '강동 아이파크 더 리버몰 주차관제실';
+        const OFFICIAL_FOOTER_SUBTITLE = '본 문서는 주차관제실 전자승인 문서입니다.';
+        const PDF_FONT_URLS = [
+            'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/nanumgothic/NanumGothic-Regular.ttf',
+            'https://raw.githubusercontent.com/googlefonts/nanumgothic/master/fonts/ttf/NanumGothic-Regular.ttf'
+        ];
         
         // --- 권한 및 상태 정의 ---
         const ROLES = {
@@ -129,37 +136,108 @@
             return `${today.getFullYear()}년 ${String(today.getMonth() + 1).padStart(2, '0')}월 ${String(today.getDate()).padStart(2, '0')}일`;
         };
 
+        const parseSubmissionArray = (raw) => {
+            if (!raw) return [];
+            try {
+                const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+                return Array.isArray(parsed) ? parsed : [];
+            } catch {
+                return [];
+            }
+        };
+
+        const getRetentionBaseDate = (item) => {
+            if (item.type === 'construction' && item.endDate) {
+                const endDate = new Date(`${item.endDate}T${item.endTime || '23:59'}`);
+                if (!Number.isNaN(endDate.getTime())) return endDate;
+            }
+            const submitted = new Date(item.submittedAt || item.updatedAt || 0);
+            if (Number.isNaN(submitted.getTime())) return null;
+            return submitted;
+        };
+
+        const isWithinRetentionWindow = (item, retentionPolicy) => {
+            const baseDate = getRetentionBaseDate(item);
+            if (!baseDate) return false;
+            const expireAt = new Date(baseDate);
+
+            if (item.type === 'construction') {
+                expireAt.setDate(expireAt.getDate() + retentionPolicy.constructionDays);
+            } else if (item.type === 'regular') {
+                expireAt.setMonth(expireAt.getMonth() + retentionPolicy.regularMonths);
+            } else {
+                return true;
+            }
+
+            return new Date() <= expireAt;
+        };
+
+        const pruneSubmissionsByRetention = (items, retentionPolicy) =>
+            items.filter((item) => isWithinRetentionWindow(item, retentionPolicy));
+
         // --- 서명 패드 ---
         const SignaturePad = ({ onSave, initialData }) => {
             const canvasRef = useRef(null);
             const [isDrawing, setIsDrawing] = useState(false);
             const [hasSignature, setHasSignature] = useState(!!initialData);
+            const signatureDataRef = useRef(initialData || null);
 
-            useEffect(() => {
+            const drawSignatureImage = (dataUrl) => {
                 const canvas = canvasRef.current;
                 if (!canvas) return;
-                const ratio = Math.max(window.devicePixelRatio || 1, 1);
-                canvas.width = canvas.offsetWidth * ratio;
-                canvas.height = canvas.offsetHeight * ratio;
-                canvas.getContext("2d").scale(ratio, ratio);
-                if (initialData) {
-                    const ctx = canvas.getContext('2d');
-                    const img = new Image();
-                    img.onload = () => ctx.drawImage(img, 0, 0, canvas.offsetWidth, canvas.offsetHeight);
-                    img.src = initialData;
+                if (!dataUrl) return;
+                const ctx = canvas.getContext('2d');
+                const img = new Image();
+                img.onload = () => ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                img.src = dataUrl;
+            };
+
+            const syncCanvasSize = () => {
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+                const rect = canvas.getBoundingClientRect();
+                const nextWidth = Math.max(1, Math.round(rect.width));
+                const nextHeight = Math.max(1, Math.round(rect.height));
+                if (canvas.width === nextWidth && canvas.height === nextHeight) return;
+
+                const savedSignature = signatureDataRef.current;
+                canvas.width = nextWidth;
+                canvas.height = nextHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.lineWidth = 2;
+                ctx.lineCap = 'round';
+                ctx.strokeStyle = '#000';
+
+                if (savedSignature) {
+                    drawSignatureImage(savedSignature);
                 }
-            }, []);
+            };
+
+            useEffect(() => {
+                signatureDataRef.current = initialData || null;
+                setHasSignature(!!initialData);
+                syncCanvasSize();
+                const rafId = requestAnimationFrame(syncCanvasSize);
+                window.addEventListener('resize', syncCanvasSize);
+                return () => {
+                    cancelAnimationFrame(rafId);
+                    window.removeEventListener('resize', syncCanvasSize);
+                };
+            }, [initialData]);
 
             const getPos = (e) => {
                 const canvas = canvasRef.current;
                 const rect = canvas.getBoundingClientRect();
+                const clientX = (e.touches ? e.touches[0].clientX : e.clientX);
+                const clientY = (e.touches ? e.touches[0].clientY : e.clientY);
                 return { 
-                    x: (e.touches ? e.touches[0].clientX : e.clientX) - rect.left, 
-                    y: (e.touches ? e.touches[0].clientY : e.clientY) - rect.top 
+                    x: Math.max(0, Math.min(clientX - rect.left, rect.width)),
+                    y: Math.max(0, Math.min(clientY - rect.top, rect.height))
                 };
             };
 
             const startDrawing = (e) => {
+                syncCanvasSize();
                 e.preventDefault(); setIsDrawing(true);
                 const { x, y } = getPos(e);
                 const ctx = canvasRef.current.getContext('2d');
@@ -176,13 +254,20 @@
             };
 
             const endDrawing = () => {
-                if (isDrawing) { setIsDrawing(false); onSave(canvasRef.current.toDataURL()); }
+                if (isDrawing) {
+                    setIsDrawing(false);
+                    const dataUrl = canvasRef.current.toDataURL();
+                    signatureDataRef.current = dataUrl;
+                    onSave(dataUrl);
+                }
             };
 
             const clear = () => {
                 const canvas = canvasRef.current;
                 canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
-                setHasSignature(false); onSave(null);
+                signatureDataRef.current = null;
+                setHasSignature(false);
+                onSave(null);
             };
 
             return (
@@ -252,21 +337,31 @@
             const [showAdminLogin, setShowAdminLogin] = useState(false);
             const [notifications, setNotifications] = useState([]);
             
-            const toSubmissionGroups = (data) => ({
-                construction: data.filter(item => item.type === 'construction').sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt)),
-                regular: data.filter(item => item.type === 'regular').sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt))
-            });
+            const toSubmissionGroups = (data) => {
+                const source = Array.isArray(data) ? data : [];
+                return {
+                    construction: source.filter(item => item.type === 'construction').sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt)),
+                    regular: source.filter(item => item.type === 'regular').sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt))
+                };
+            };
 
             const readLocalSubmissions = () => {
                 try {
                     const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
-                    return raw ? toSubmissionGroups(JSON.parse(raw)) : { construction: [], regular: [] };
+                    const parsed = parseSubmissionArray(raw);
+                    const pruned = pruneSubmissionsByRetention(parsed, STORAGE_RETENTION);
+                    if (pruned.length !== parsed.length) {
+                        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(pruned));
+                    }
+                    return toSubmissionGroups(pruned);
                 } catch { return { construction: [], regular: [] }; }
             };
 
             const persistLocalSubmissions = (data) => {
-                localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(data));
-                setSubmissions(toSubmissionGroups(data));
+                const source = Array.isArray(data) ? data : [];
+                const pruned = pruneSubmissionsByRetention(source, STORAGE_RETENTION);
+                localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(pruned));
+                setSubmissions(toSubmissionGroups(pruned));
             };
 
             const getAllSubmissions = () => [...submissions.construction, ...submissions.regular];
@@ -275,9 +370,9 @@
                 setSubmissions(readLocalSubmissions());
                 const handleStorageChange = (e) => {
                     if (e.key === LOCAL_STORAGE_KEY) {
-                        const newData = JSON.parse(e.newValue || '[]');
-                        const oldData = JSON.parse(e.oldValue || '[]');
-                        setSubmissions(toSubmissionGroups(newData));
+                        const newData = parseSubmissionArray(e.newValue);
+                        const oldData = parseSubmissionArray(e.oldValue);
+                        setSubmissions(readLocalSubmissions());
                         if (adminRole && newData.length > oldData.length) {
                             setNotifications(prev => [...prev, { id: Date.now(), message: '새로운 신청이 도착했습니다.' }]);
                         }
@@ -334,14 +429,16 @@
                     firstCheckedManagerName: '주차관리팀',
                     firstCheckedManagerRole: 'MASTER',
                     firstCheckedManagerSignature: null,
-                    firstCheckedAt: new Date().toISOString()
+                    firstCheckedAt: new Date().toISOString(),
+                    finalApprovalSignatureText: null
                 } : {
                     status: 'pending',
                     checkedBy: null,
                     firstCheckedManagerName: null,
                     firstCheckedManagerRole: null,
                     firstCheckedManagerSignature: null,
-                    firstCheckedAt: null
+                    firstCheckedAt: null,
+                    finalApprovalSignatureText: null
                 };
                 
                 let nextSubmissions;
@@ -352,6 +449,7 @@
                         ...firstCheckDefaults,
                         approvedBy: null,
                         approvedAt: null,
+                        finalApprovalSignatureText: null,
                         rejectionReason: null,
                         rejectedBy: null,
                         rejectedAt: null
@@ -389,13 +487,15 @@
                         updates.firstCheckedAt = new Date().toISOString();
                     }
                     else if (newStatus === 'approved') {
-                        updates.approvedBy = name;
+                        updates.approvedBy = FINAL_APPROVER_SIGNATURE_TEXT;
                         updates.approvedAt = new Date().toISOString();
+                        updates.finalApprovalSignatureText = FINAL_APPROVER_SIGNATURE_TEXT;
                     }
                     else if (newStatus === 'rejected') {
                         updates.rejectionReason = reason;
                         updates.rejectedBy = name;
                         updates.rejectedAt = new Date().toISOString();
+                        updates.finalApprovalSignatureText = null;
                     }
                     return { ...item, ...updates };
                 });
@@ -631,12 +731,6 @@
                 window.XLSX.writeFile(wb, `주차관리_${activeTab}_${new Date().toISOString().slice(0,10)}.xlsx`);
             };
 
-            const sanitizeFileName = (value) => (value || '')
-                .toString()
-                .replace(/[\\/:*?"<>|]/g, '_')
-                .replace(/\s+/g, ' ')
-                .trim();
-
             const formatDateTimeForDoc = (value) => {
                 if (!value) return '-';
                 const d = new Date(value);
@@ -659,10 +753,17 @@
                 const fontName = 'NanumGothic';
                 try {
                     if (!pdfFontBase64Ref.current) {
-                        const res = await fetch('https://raw.githubusercontent.com/googlefonts/nanumgothic/master/fonts/ttf/NanumGothic-Regular.ttf');
-                        if (!res.ok) throw new Error('font fetch failed');
-                        const buf = await res.arrayBuffer();
-                        pdfFontBase64Ref.current = arrayBufferToBase64(buf);
+                        let loadedBuffer = null;
+                        for (const url of PDF_FONT_URLS) {
+                            try {
+                                const res = await fetch(url);
+                                if (!res.ok) continue;
+                                loadedBuffer = await res.arrayBuffer();
+                                break;
+                            } catch {}
+                        }
+                        if (!loadedBuffer) throw new Error('font fetch failed');
+                        pdfFontBase64Ref.current = arrayBufferToBase64(loadedBuffer);
                     }
                     pdf.addFileToVFS(fontFile, pdfFontBase64Ref.current);
                     pdf.addFont(fontFile, fontName, 'normal');
@@ -687,14 +788,17 @@
                 }
             };
 
-            const buildApplicationPdf = async (item) => {
-                const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-                await ensurePdfFont(pdf);
+            const renderApplicationToPdf = (pdf, item, index = 1, total = 1) => {
                 const pageWidth = pdf.internal.pageSize.getWidth();
+                const pageHeight = pdf.internal.pageSize.getHeight();
                 let y = 14;
 
                 pdf.setFontSize(16);
                 pdf.text('주차관리 신청서', pageWidth / 2, y, { align: 'center' });
+                if (total > 1) {
+                    pdf.setFontSize(9);
+                    pdf.text(`${index}/${total}`, pageWidth - 14, y, { align: 'right' });
+                }
                 y += 7;
                 pdf.setFontSize(9);
                 pdf.text(`문서번호: ${item.id || '-'}`, 14, y);
@@ -718,7 +822,7 @@
                         ['방문 기간', `${item.startDate || '-'} ${item.startTime || ''} ~ ${item.endDate || '-'} ${item.endTime || ''}`],
                         ['차량번호', (item.vehicles || []).join(', ') || '-'],
                         ['1차 확인자', item.firstCheckedManagerName || item.checkedBy || '-'],
-                        ['최종 승인자', item.approvedBy || '-'],
+                        ['최종 승인자', item.approvedBy || (item.status === 'approved' ? FINAL_APPROVER_SIGNATURE_TEXT : '-')],
                         ['반려 사유', item.rejectionReason || '-']
                     ]
                     : [
@@ -734,7 +838,7 @@
                         ['기존 차량번호', item.oldCarNumber || '-'],
                         ['변경 사유', item.changeReason || '-'],
                         ['1차 확인자', item.firstCheckedManagerName || item.checkedBy || '-'],
-                        ['최종 승인자', item.approvedBy || '-'],
+                        ['최종 승인자', item.approvedBy || (item.status === 'approved' ? FINAL_APPROVER_SIGNATURE_TEXT : '-')],
                         ['반려 사유', item.rejectionReason || '-']
                     ];
 
@@ -742,6 +846,10 @@
                     const text = `${value || '-'}`;
                     const lines = pdf.splitTextToSize(text, pageWidth - 74);
                     const height = Math.max(8, lines.length * 4 + 3);
+                    if (y + height > pageHeight - 14) {
+                        pdf.addPage();
+                        y = 14;
+                    }
                     pdf.setFillColor(248, 250, 252);
                     pdf.rect(14, y, 44, height, 'F');
                     pdf.setDrawColor(229, 231, 235);
@@ -757,20 +865,55 @@
                 y += 4;
 
                 const sigBoxH = 34;
-                if (y + sigBoxH + 4 > 285) {
+                if (y + sigBoxH + 4 > pageHeight - 10) {
                     pdf.addPage();
                     y = 14;
                 }
+                const sigGap = 4;
+                const sigBoxW = (pageWidth - 28 - (sigGap * 2)) / 3;
+                const sigX1 = 14;
+                const sigX2 = sigX1 + sigBoxW + sigGap;
+                const sigX3 = sigX2 + sigBoxW + sigGap;
                 pdf.setDrawColor(229, 231, 235);
-                pdf.rect(14, y, 88, sigBoxH);
-                pdf.rect(pageWidth - 102, y, 88, sigBoxH);
+                pdf.rect(sigX1, y, sigBoxW, sigBoxH);
+                pdf.rect(sigX2, y, sigBoxW, sigBoxH);
+                pdf.rect(sigX3, y, sigBoxW, sigBoxH);
                 pdf.setFontSize(9);
-                pdf.text('신청자 서명', 16, y + 5);
-                pdf.text('1차 확인 담당자 서명', pageWidth - 100, y + 5);
-                const hasApplicantSignature = addDataImageToPdf(pdf, item.signature, 16, y + 7, 84, 24);
-                const hasCheckerSignature = addDataImageToPdf(pdf, item.firstCheckedManagerSignature, pageWidth - 100, y + 7, 84, 24);
-                if (!hasApplicantSignature) { pdf.setFontSize(8); pdf.text('서명 없음', 16, y + 20); }
-                if (!hasCheckerSignature) { pdf.setFontSize(8); pdf.text('서명 없음', pageWidth - 100, y + 20); }
+                pdf.text('신청자 서명', sigX1 + 2, y + 5);
+                pdf.text('1차 확인 서명', sigX2 + 2, y + 5);
+                pdf.text('최종 확인', sigX3 + 2, y + 5);
+
+                const sigImgW = sigBoxW - 4;
+                const sigImgH = 16;
+                const hasApplicantSignature = addDataImageToPdf(pdf, item.signature, sigX1 + 2, y + 7, sigImgW, sigImgH);
+                const hasCheckerSignature = addDataImageToPdf(pdf, item.firstCheckedManagerSignature, sigX2 + 2, y + 7, sigImgW, sigImgH);
+                if (!hasApplicantSignature) { pdf.setFontSize(8); pdf.text('서명 없음', sigX1 + 2, y + 18); }
+                if (!hasCheckerSignature) { pdf.setFontSize(8); pdf.text('서명 없음', sigX2 + 2, y + 18); }
+
+                const applicantSignedAt = formatDateTimeForDoc(item.submittedAt);
+                const firstCheckedAt = formatDateTimeForDoc(item.firstCheckedAt);
+                if (applicantSignedAt !== '-') {
+                    pdf.setFontSize(6);
+                    pdf.text(applicantSignedAt, sigX1 + (sigBoxW / 2), y + 31, { align: 'center' });
+                }
+                if (firstCheckedAt !== '-') {
+                    pdf.setFontSize(6);
+                    pdf.text(firstCheckedAt, sigX2 + (sigBoxW / 2), y + 31, { align: 'center' });
+                }
+
+                const finalSignatureText = item.finalApprovalSignatureText || (item.status === 'approved' ? FINAL_APPROVER_SIGNATURE_TEXT : '');
+                if (finalSignatureText) {
+                    pdf.setFontSize(11);
+                    pdf.text(finalSignatureText, sigX3 + (sigBoxW / 2), y + 17, { align: 'center' });
+                    const approvedAt = formatDateTimeForDoc(item.approvedAt);
+                    if (approvedAt !== '-') {
+                        pdf.setFontSize(6);
+                        pdf.text(approvedAt, sigX3 + (sigBoxW / 2), y + 31, { align: 'center' });
+                    }
+                } else {
+                    pdf.setFontSize(8);
+                    pdf.text('미확정', sigX3 + (sigBoxW / 2), y + 20, { align: 'center' });
+                }
 
                 if (item.registrationImg || item.idCardImg) {
                     pdf.addPage();
@@ -791,39 +934,55 @@
                         if (!ok) { pdf.setFontSize(8); pdf.text('이미지 로드 실패', pageWidth - 96, imgY + 10); }
                     }
                 }
+            };
+
+            const buildBundledApplicationsPdf = async (items) => {
+                const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+                const fontReady = await ensurePdfFont(pdf);
+                if (!fontReady) throw new Error('PDF_FONT_LOAD_FAILED');
+                items.forEach((item, idx) => {
+                    if (idx > 0) pdf.addPage();
+                    renderApplicationToPdf(pdf, item, idx + 1, items.length);
+                });
+
+                const totalPages = pdf.getNumberOfPages();
+                for (let page = 1; page <= totalPages; page++) {
+                    pdf.setPage(page);
+                    const pageWidth = pdf.internal.pageSize.getWidth();
+                    const pageHeight = pdf.internal.pageSize.getHeight();
+                    const footerLineY = pageHeight - 12;
+                    const footerTextY = pageHeight - 8;
+
+                    pdf.setDrawColor(226, 232, 240);
+                    pdf.line(14, footerLineY, pageWidth - 14, footerLineY);
+                    pdf.setTextColor(100, 116, 139);
+                    pdf.setFontSize(7);
+                    pdf.text(OFFICIAL_FOOTER_SUBTITLE, 14, footerTextY);
+                    pdf.text(`${OFFICIAL_FOOTER_TITLE} · ${page}/${totalPages}`, pageWidth - 14, footerTextY, { align: 'right' });
+                    pdf.setTextColor(0, 0, 0);
+                }
 
                 return pdf.output('arraybuffer');
             };
 
-            const handleZipDownload = async () => {
+            const handlePdfDownload = async () => {
                 if (isZipping) return;
                 const targetList = getTargetList();
                 if (targetList.length === 0) return alert("다운로드할 데이터가 없습니다.");
                 setIsZipping(true);
                 try {
-                    const zip = new JSZip();
-                    const imgFolder = zip.folder("images");
-                    const formFolder = zip.folder("forms");
-                    let fileCount = 0;
-                    for (let idx = 0; idx < targetList.length; idx++) {
-                        const item = targetList[idx];
-                        const baseName = sanitizeFileName(`${item.name || item.companyName}_${item.carNumber || (item.vehicles ? item.vehicles[0] : '차량')}`) || `신청서_${idx + 1}`;
-                        if (item.registrationImg) { const b64 = item.registrationImg.split(',')[1]; if(b64) { imgFolder.file(`${baseName}_등록증.jpg`, b64, {base64: true}); fileCount++; } }
-                        if (item.idCardImg) { const b64 = item.idCardImg.split(',')[1]; if(b64) { imgFolder.file(`${baseName}_사원증.jpg`, b64, {base64: true}); fileCount++; } }
-                        if (item.signature) { const b64 = item.signature.split(',')[1]; if(b64) { imgFolder.file(`${baseName}_서명.png`, b64, {base64: true}); fileCount++; } }
-                        if (item.firstCheckedManagerSignature) { const b64 = item.firstCheckedManagerSignature.split(',')[1]; if(b64) { imgFolder.file(`${baseName}_1차확인담당자서명.png`, b64, {base64: true}); fileCount++; } }
-                        try {
-                            const pdfBuffer = await buildApplicationPdf(item);
-                            formFolder.file(`${baseName}_신청서.pdf`, pdfBuffer);
-                            fileCount++;
-                        } catch {}
-                    }
-                    if (fileCount === 0) { alert("저장할 파일이 없습니다."); setIsZipping(false); return; }
-                    const content = await zip.generateAsync({type:"blob"});
-                    const url = window.URL.createObjectURL(content);
-                    const a = document.createElement("a"); a.href = url; a.download = `이미지_${activeTab}_${new Date().toISOString().slice(0,10)}.zip`; a.click();
+                    const ymd = new Date().toISOString().slice(0,10);
+                    const bundlePdf = await buildBundledApplicationsPdf(targetList);
+                    const url = window.URL.createObjectURL(new Blob([bundlePdf], { type: 'application/pdf' }));
+                    const a = document.createElement("a"); a.href = url; a.download = `parking_bundle_${activeTab}_${ymd}.pdf`; a.click();
                     window.URL.revokeObjectURL(url);
-                } catch (error) { alert("오류 발생"); } finally { setIsZipping(false); }
+                } catch (error) {
+                    if (error?.message === 'PDF_FONT_LOAD_FAILED') {
+                        alert("한글 폰트 로딩에 실패했습니다. 인터넷 연결 상태에서 다시 시도해주세요.");
+                    } else {
+                        alert("오류 발생");
+                    }
+                } finally { setIsZipping(false); }
             };
 
             const handleDeleteSelected = () => {
@@ -972,7 +1131,7 @@
 
                         <div className="flex gap-2 pb-3">
                             <button onClick={handleDownload} className="flex-1 bg-slate-800 hover:bg-slate-900 text-white py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-lg transition active:scale-95"><Download size={16}/><span>{selectedCount>0?`${selectedCount}건 엑셀`:'전체 엑셀'}</span></button>
-                            <button onClick={handleZipDownload} disabled={isZipping} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-lg transition active:scale-95">{isZipping?<RotateCw className="animate-spin" size={16}/>:<Archive size={16}/>}<span>{isZipping?'압축중':(selectedCount>0?`${selectedCount}건 ZIP`:'전체 ZIP')}</span></button>
+                            <button onClick={handlePdfDownload} disabled={isZipping} className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-lg transition active:scale-95">{isZipping?<RotateCw className="animate-spin" size={16}/>:<Download size={16}/>}<span>{isZipping?'PDF 생성중':(selectedCount>0?`${selectedCount}건 PDF`:'전체 PDF')}</span></button>
                             {adminRole === 'MASTER' && (
                                 <button
                                     onClick={handleDeleteSelected}
@@ -1003,6 +1162,7 @@
                                     const isExpanded = expandedId === item.id;
                                     const isSelected = selectedIds.has(item.id);
                                     const isWaitingApproval = adminRole === 'MASTER' && item.status === 'checked';
+                                    const finalApprovalSignature = item.finalApprovalSignatureText || item.approvedBy || (item.status === 'approved' ? FINAL_APPROVER_SIGNATURE_TEXT : null);
 
                                     return (
                                         <div key={item.id} className={`border-b border-slate-100 last:border-0 bg-white ${isSelected ? 'bg-indigo-50/20' : ''} ${isWaitingApproval ? 'border-2 border-indigo-500 z-10 relative' : ''}`}>
@@ -1059,13 +1219,28 @@
                                                         {item.signature && (
                                                             <div className="mt-2 pt-2 border-t border-slate-100 px-2">
                                                                 <span className="text-xs text-slate-400 block mb-2 font-bold">전자 서명</span>
-                                                                <div className="h-20 bg-slate-50 rounded-lg border border-slate-200 flex items-center justify-center p-2 cursor-pointer" onClick={() => {setViewImage(item.signature); setViewImageTitle('서명');}}><img src={item.signature} className="max-h-full max-w-full"/></div>
+                                                                <div className="h-20 bg-slate-50 rounded-lg border border-slate-200 flex flex-col items-center justify-center p-2 cursor-pointer" onClick={() => {setViewImage(item.signature); setViewImageTitle('서명');}}>
+                                                                    <img src={item.signature} className={`max-w-full ${item.submittedAt ? 'max-h-10 mb-1' : 'max-h-full'}`}/>
+                                                                    {item.submittedAt && <span className="text-[11px] text-slate-400">{formatDateTimeForDoc(item.submittedAt)}</span>}
+                                                                </div>
                                                             </div>
                                                         )}
                                                         {item.firstCheckedManagerSignature && (
                                                             <div className="mt-2 pt-2 border-t border-slate-100 px-2">
                                                                 <span className="text-xs text-slate-400 block mb-2 font-bold">1차 확인 담당자 서명</span>
-                                                                <div className="h-20 bg-slate-50 rounded-lg border border-slate-200 flex items-center justify-center p-2 cursor-pointer" onClick={() => {setViewImage(item.firstCheckedManagerSignature); setViewImageTitle('1차 확인 담당자 서명');}}><img src={item.firstCheckedManagerSignature} className="max-h-full max-w-full"/></div>
+                                                                <div className="h-20 bg-slate-50 rounded-lg border border-slate-200 flex flex-col items-center justify-center p-2 cursor-pointer" onClick={() => {setViewImage(item.firstCheckedManagerSignature); setViewImageTitle('1차 확인 담당자 서명');}}>
+                                                                    <img src={item.firstCheckedManagerSignature} className={`max-w-full ${item.firstCheckedAt ? 'max-h-10 mb-1' : 'max-h-full'}`}/>
+                                                                    {item.firstCheckedAt && <span className="text-[11px] text-slate-400">{formatDateTimeForDoc(item.firstCheckedAt)}</span>}
+                                                                </div>
+                                                            </div>
+                                                        )}
+                                                        {finalApprovalSignature && (
+                                                            <div className="mt-2 pt-2 border-t border-slate-100 px-2">
+                                                                <span className="text-xs text-slate-400 block mb-2 font-bold">최종확정 서명</span>
+                                                                <div className="h-20 bg-slate-50 rounded-lg border border-slate-200 flex flex-col items-center justify-center p-2">
+                                                                    <span className="text-base font-extrabold text-emerald-700">{finalApprovalSignature}</span>
+                                                                    {item.approvedAt && <span className="text-[11px] text-slate-400 mt-1">{formatDateTimeForDoc(item.approvedAt)}</span>}
+                                                                </div>
                                                             </div>
                                                         )}
                                                         <div className="mt-2 pt-2 border-t border-slate-100 px-2 flex justify-end gap-2 text-[10px] text-slate-400">
@@ -1384,30 +1559,7 @@
                     minute: '2-digit'
                 });
             };
-            const isVisibleInStatusCheck = (item) => {
-                const now = new Date();
-                let baseDate = null;
-
-                if (item.type === 'construction' && item.endDate) {
-                    const endDt = new Date(`${item.endDate}T${item.endTime || '23:59'}`);
-                    if (!Number.isNaN(endDt.getTime())) baseDate = endDt;
-                }
-                if (!baseDate) {
-                    const submitted = new Date(item.submittedAt || item.updatedAt || 0);
-                    if (Number.isNaN(submitted.getTime())) return false;
-                    baseDate = submitted;
-                }
-
-                const expireAt = new Date(baseDate);
-                if (item.type === 'construction') {
-                    // 공사/방문차량: 종료시각 기준 1일 후 만료
-                    expireAt.setDate(expireAt.getDate() + 1);
-                } else {
-                    // 정기권: 신청일시 기준 1개월 후 만료
-                    expireAt.setMonth(expireAt.getMonth() + 1);
-                }
-                return now <= expireAt;
-            };
+            const isVisibleInStatusCheck = (item) => isWithinRetentionWindow(item, STATUS_CHECK_RETENTION);
             const search = (e) => {
                 e.preventDefault();
                 const c = submissions.construction.filter(i => isVisibleInStatusCheck(i) && (i.companyName===name || i.visitorName===name) && i.vehicles.some(v=>v.includes(car)));
