@@ -342,6 +342,7 @@
             const [editingItem, setEditingItem] = useState(null);
             const [showAdminLogin, setShowAdminLogin] = useState(false);
             const [notifications, setNotifications] = useState([]);
+            const [showNotificationCenter, setShowNotificationCenter] = useState(false);
             
             const toSubmissionGroups = (data) => {
                 const source = Array.isArray(data) ? data : [];
@@ -371,6 +372,55 @@
             };
 
             const getAllSubmissions = () => [...submissions.construction, ...submissions.regular];
+            const unreadNotificationCount = notifications.reduce((count, item) => count + (item.read ? 0 : 1), 0);
+            const toastNotifications = notifications.filter(item => !item.read).slice(0, 3);
+            const markAllNotificationsRead = () => setNotifications(prev => prev.map(item => (item.read ? item : { ...item, read: true })));
+            const clearNotifications = () => setNotifications([]);
+
+            const pushNotifications = (messages) => {
+                if (!messages || messages.length === 0) return;
+                const createdAt = new Date().toISOString();
+                const base = Date.now();
+                const entries = messages.map((message, idx) => ({
+                    id: `noti-${base}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+                    message,
+                    createdAt,
+                    read: false
+                }));
+                setNotifications(prev => [...entries, ...prev].slice(0, 100));
+                entries.forEach((entry) => {
+                    window.setTimeout(() => {
+                        setNotifications(prev => prev.map(item => item.id === entry.id ? { ...item, read: true } : item));
+                    }, 5000);
+                });
+            };
+
+            const buildRoleNotifications = (newData, oldData, roleId) => {
+                if (!roleId) return [];
+                const oldMap = new Map((oldData || []).map((item) => [item.id, item]));
+                const messages = [];
+
+                (newData || []).forEach((item) => {
+                    const prev = oldMap.get(item.id);
+                    const typeLabel = item.type === 'construction' ? '공사/방문' : '정기권';
+
+                    if (!prev) {
+                        if (roleId === 'SAFETY' || roleId === 'CENTER') {
+                            messages.push(`신청서가 접수되었습니다. 1차 확인이 필요합니다. (${typeLabel})`);
+                        }
+                        if (roleId === 'MASTER' && item.status === 'checked') {
+                            messages.push(`2차 확인이 필요합니다. (${typeLabel})`);
+                        }
+                        return;
+                    }
+
+                    if (prev.status !== item.status && item.status === 'checked' && roleId === 'MASTER') {
+                        messages.push(`2차 확인이 필요합니다. (${typeLabel})`);
+                    }
+                });
+
+                return messages;
+            };
 
             useEffect(() => {
                 setSubmissions(readLocalSubmissions());
@@ -379,8 +429,9 @@
                         const newData = parseSubmissionArray(e.newValue);
                         const oldData = parseSubmissionArray(e.oldValue);
                         setSubmissions(readLocalSubmissions());
-                        if (adminRole && newData.length > oldData.length) {
-                            setNotifications(prev => [...prev, { id: Date.now(), message: '새로운 신청이 도착했습니다.' }]);
+                        if (adminRole) {
+                            const messages = buildRoleNotifications(newData, oldData, adminRole);
+                            pushNotifications(messages);
                         }
                     }
                 };
@@ -550,6 +601,22 @@
                         </div>
                         <div className="flex items-center gap-2">
                             <button
+                                onClick={() => {
+                                    if (showNotificationCenter) {
+                                        setShowNotificationCenter(false);
+                                        return;
+                                    }
+                                    markAllNotificationsRead();
+                                    setShowNotificationCenter(true);
+                                }}
+                                className="relative px-2.5 py-1.5 rounded-full border border-slate-700 text-slate-300 hover:text-white hover:border-slate-500 hover:bg-slate-800 transition-all duration-200 flex items-center justify-center"
+                                aria-label="알림"
+                                title="알림"
+                            >
+                                <Bell size={14} />
+                                {unreadNotificationCount > 0 && <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 bg-rose-500 text-white text-[10px] rounded-full flex items-center justify-center font-bold">{unreadNotificationCount > 9 ? '9+' : unreadNotificationCount}</span>}
+                            </button>
+                            <button
                                 onClick={() => { setCurrentView('home'); setEditingItem(null); }}
                                 className={`px-3 py-1.5 rounded-full border transition-all duration-200 flex items-center gap-1.5 ${currentView === 'home' ? 'bg-slate-800 border-slate-600 text-slate-200' : 'border-slate-700 text-slate-400 hover:text-white hover:border-slate-500 hover:bg-slate-800'}`}
                             >
@@ -563,8 +630,15 @@
                         </div>
                     </header>
                     <main className="flex-1 overflow-y-auto relative">{renderView()}</main>
+                    <NotificationCenterModal
+                        isOpen={showNotificationCenter}
+                        onClose={() => setShowNotificationCenter(false)}
+                        notifications={notifications}
+                        onMarkAllRead={markAllNotificationsRead}
+                        onClear={clearNotifications}
+                    />
                     <div className="absolute top-4 right-4 flex flex-col gap-2 z-50 pointer-events-none">
-                        {notifications.map(noti => (
+                        {toastNotifications.map(noti => (
                             <div key={noti.id} className="bg-slate-800/90 backdrop-blur text-white p-3 rounded-xl shadow-xl flex items-center gap-3 animate-slide-in-right">
                                 <Bell className="text-yellow-400 animate-bounce-short" size={20} />
                                 <span className="text-sm font-bold">{noti.message}</span>
@@ -615,6 +689,44 @@
                     <div className="absolute bottom-6 text-white/70 text-sm bg-black/50 px-3 py-1 rounded-full">화면을 눌러 닫기</div>
                 </div>
             )
+        }
+
+        function NotificationCenterModal({ isOpen, onClose, notifications, onMarkAllRead, onClear }) {
+            if (!isOpen) return null;
+
+            return (
+                <div className="fixed inset-0 z-[70] bg-black/40 backdrop-blur-sm p-4 animate-fade-in" onClick={onClose}>
+                    <div className="ml-auto w-full max-w-sm h-[70vh] bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+                        <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+                            <h3 className="font-bold text-slate-800 flex items-center gap-2"><Bell size={16}/> 알림</h3>
+                            <button onClick={onClose} className="p-1.5 rounded-full hover:bg-slate-200"><X size={16} className="text-slate-500" /></button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-3 space-y-2 bg-white">
+                            {notifications.length === 0 ? (
+                                <div className="h-full flex items-center justify-center text-sm text-slate-400">표시할 알림이 없습니다.</div>
+                            ) : (
+                                notifications.map((noti) => {
+                                    const created = new Date(noti.createdAt || Date.now());
+                                    const timeText = Number.isNaN(created.getTime()) ? '-' : created.toLocaleString('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+                                    return (
+                                        <div key={noti.id} className={`p-3 rounded-xl border ${noti.read ? 'bg-slate-50 border-slate-200' : 'bg-indigo-50 border-indigo-200'}`}>
+                                            <div className="flex justify-between items-start gap-2">
+                                                <p className={`text-sm font-semibold ${noti.read ? 'text-slate-600' : 'text-slate-800'}`}>{noti.message}</p>
+                                                {!noti.read && <span className="w-2 h-2 mt-1 rounded-full bg-indigo-500 shrink-0"></span>}
+                                            </div>
+                                            <div className="text-[11px] text-slate-400 mt-1">{timeText}</div>
+                                        </div>
+                                    );
+                                })
+                            )}
+                        </div>
+                        <div className="px-3 py-3 border-t border-slate-100 bg-slate-50 grid grid-cols-2 gap-2">
+                            <button onClick={onMarkAllRead} className="py-2.5 rounded-lg border border-slate-300 text-slate-600 text-sm font-bold hover:bg-white">모두 읽음</button>
+                            <button onClick={onClear} className="py-2.5 rounded-lg bg-rose-500 text-white text-sm font-bold hover:bg-rose-600">전체 삭제</button>
+                        </div>
+                    </div>
+                </div>
+            );
         }
 
         // --- 관리자 대시보드 ---
