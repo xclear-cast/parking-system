@@ -84,11 +84,6 @@
         import { Car, FileText, ArrowLeft, Trash2, ShieldCheck, X, Download, AlertCircle, Search, Clock, Lock, ChevronRight, UploadCloud, CheckCircle, Bell, UserCheck, BadgeCheck, PenTool, RotateCw, Briefcase, Home } from 'lucide-react';
         import { jsPDF } from 'jspdf';
 
-        const LOCAL_STORAGE_KEY = 'parking_submissions_full_v3';
-        const MASTER_BACKUP_META_KEY = 'parking_master_backup_meta_v1';
-        const BACKUP_REMINDER_LAST_AT_KEY = 'parking_backup_reminder_last_at_v1';
-        const BACKUP_REMINDER_REPEAT_MS = 5 * 60 * 1000;
-        const OFFICIAL_BACKUP_WINDOW = { startMinutes: (21 * 60) + 50, endMinutes: (22 * 60) };
         const ADMIN_SESSION_KEY = 'parking_admin_session_v1';
         const ADMIN_SESSION_DURATION_MS = 24 * 60 * 60 * 1000;
         const STATUS_CHECK_RETENTION = { constructionDays: 1, regularMonths: 1 };
@@ -100,9 +95,21 @@
             'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/nanumgothic/NanumGothic-Regular.ttf',
             'https://raw.githubusercontent.com/googlefonts/nanumgothic/master/fonts/ttf/NanumGothic-Regular.ttf'
         ];
-        // 동기화 백엔드 플러그인: 업체 확정 전에는 local 유지, 확정 후 provider만 바꾸면 연결 가능
-        const DATA_SYNC_PROVIDER = 'local'; // 'local' | 'firebase'
+        // 동기화 백엔드: cloud-only 고정, provider는 placeholder 상태로 유지
+        const DATA_SYNC_MODE = 'cloud-only'; // 'cloud-only'
+        const DATA_SYNC_PROVIDER = 'placeholder'; // 'placeholder' | 'firebase'
         const DATA_SYNC_COLLECTION = 'parking_submissions_v1';
+        const PLACEHOLDER_PROVIDER_NOTICE = 'placeholder 작업모드: 새로고침하면 데이터가 초기화됩니다.';
+        const placeholderStore = [];
+        const placeholderSubscribers = new Set();
+        const sortBySubmittedAtDesc = (list) =>
+            [...list].sort((a, b) => new Date(b?.submittedAt || 0) - new Date(a?.submittedAt || 0));
+        const emitPlaceholderStore = () => {
+            const snapshot = sortBySubmittedAtDesc(placeholderStore);
+            placeholderSubscribers.forEach((fn) => {
+                try { fn(snapshot); } catch {}
+            });
+        };
         const DATA_SYNC_CONFIG = {
             firebase: {
                 // TODO: Firebase 콘솔 > 프로젝트 설정 > 웹 앱 구성값으로 채우세요.
@@ -117,11 +124,41 @@
         const hasFirebaseConfig = (config) =>
             Boolean(config?.apiKey && config?.projectId && config?.appId);
         const createCloudSyncClient = async () => {
-            if (DATA_SYNC_PROVIDER !== 'firebase') return null;
+            if (DATA_SYNC_PROVIDER === 'placeholder') {
+                return {
+                    provider: 'placeholder',
+                    subscribe: (onData) => {
+                        if (typeof onData !== 'function') return () => {};
+                        placeholderSubscribers.add(onData);
+                        onData(sortBySubmittedAtDesc(placeholderStore));
+                        return () => placeholderSubscribers.delete(onData);
+                    },
+                    upsert: async (item) => {
+                        if (!item?.id) return;
+                        const idx = placeholderStore.findIndex((row) => row.id === item.id);
+                        if (idx >= 0) {
+                            placeholderStore[idx] = { ...item, id: item.id };
+                        } else {
+                            placeholderStore.push({ ...item, id: item.id });
+                        }
+                        emitPlaceholderStore();
+                    },
+                    removeMany: async (ids) => {
+                        const idSet = new Set(Array.isArray(ids) ? ids.filter(Boolean) : []);
+                        if (idSet.size === 0) return;
+                        const next = placeholderStore.filter((row) => !idSet.has(row.id));
+                        placeholderStore.length = 0;
+                        placeholderStore.push(...next);
+                        emitPlaceholderStore();
+                    }
+                };
+            }
+            if (DATA_SYNC_PROVIDER !== 'firebase') {
+                throw new Error(`UNSUPPORTED_SYNC_PROVIDER:${DATA_SYNC_PROVIDER}`);
+            }
             const firebaseConfig = DATA_SYNC_CONFIG.firebase || {};
             if (!hasFirebaseConfig(firebaseConfig)) {
-                console.warn('Firebase 설정값이 비어 있어 local 모드로 동작합니다.');
-                return null;
+                throw new Error('FIREBASE_CONFIG_MISSING');
             }
             const [{ initializeApp }, firestore] = await Promise.all([
                 import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js'),
@@ -223,71 +260,6 @@
                 .replace(/[A-Za-z]/g, '')
                 .replace(/\s+/g, '');
         const sanitizePhoneInput = (value) => (value || '').replace(/[^0-9]/g, '');
-
-        const parseSubmissionArray = (raw) => {
-            if (!raw) return [];
-            try {
-                const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-                return Array.isArray(parsed) ? parsed : [];
-            } catch {
-                return [];
-            }
-        };
-
-        const toLocalYmd = (value = Date.now()) => {
-            const d = new Date(value);
-            if (Number.isNaN(d.getTime())) return '';
-            const yyyy = d.getFullYear();
-            const mm = String(d.getMonth() + 1).padStart(2, '0');
-            const dd = String(d.getDate()).padStart(2, '0');
-            return `${yyyy}-${mm}-${dd}`;
-        };
-
-        const toMinutesOfDay = (value = Date.now()) => {
-            const d = new Date(value);
-            if (Number.isNaN(d.getTime())) return -1;
-            return (d.getHours() * 60) + d.getMinutes();
-        };
-
-        const isInOfficialBackupWindow = (value = Date.now()) => {
-            const minuteOfDay = toMinutesOfDay(value);
-            if (minuteOfDay < 0) return false;
-            return minuteOfDay >= OFFICIAL_BACKUP_WINDOW.startMinutes && minuteOfDay <= OFFICIAL_BACKUP_WINDOW.endMinutes;
-        };
-
-        const hasOfficialBackupForDate = (officialBackupAt, dateValue = Date.now()) => {
-            if (!officialBackupAt) return false;
-            const backupDate = new Date(officialBackupAt);
-            if (Number.isNaN(backupDate.getTime())) return false;
-            if (toLocalYmd(backupDate) !== toLocalYmd(dateValue)) return false;
-            return isInOfficialBackupWindow(backupDate);
-        };
-
-        const readBackupMeta = () => {
-            const fallback = { lastBackupAt: null, officialBackupAt: null, versions: {} };
-            try {
-                const raw = localStorage.getItem(MASTER_BACKUP_META_KEY);
-                if (!raw) return fallback;
-                const parsed = JSON.parse(raw);
-                const lastBackupAt = typeof parsed?.lastBackupAt === 'string' ? parsed.lastBackupAt : null;
-                const officialBackupAt = typeof parsed?.officialBackupAt === 'string' ? parsed.officialBackupAt : null;
-                const versions = parsed?.versions && typeof parsed.versions === 'object' ? parsed.versions : {};
-                return { lastBackupAt, officialBackupAt, versions };
-            } catch {
-                return fallback;
-            }
-        };
-
-        const writeBackupMeta = (meta) => {
-            try {
-                const safeMeta = {
-                    lastBackupAt: typeof meta?.lastBackupAt === 'string' ? meta.lastBackupAt : null,
-                    officialBackupAt: typeof meta?.officialBackupAt === 'string' ? meta.officialBackupAt : null,
-                    versions: meta?.versions && typeof meta.versions === 'object' ? meta.versions : {}
-                };
-                localStorage.setItem(MASTER_BACKUP_META_KEY, JSON.stringify(safeMeta));
-            } catch {}
-        };
 
         const getRetentionBaseDate = (item) => {
             if (item.type === 'construction' && item.endDate) {
@@ -567,9 +539,10 @@
             const [showNotificationCenter, setShowNotificationCenter] = useState(false);
             const [cloudSyncClient, setCloudSyncClient] = useState(null);
             const [isSyncBackendReady, setIsSyncBackendReady] = useState(false);
+            const [syncErrorMessage, setSyncErrorMessage] = useState('');
             const previousSubmissionListRef = useRef([]);
             const hasInitialSubmissionSyncRef = useRef(false);
-            const hasCloudSyncErrorAlertedRef = useRef(false);
+            const isCloudOnlyMode = DATA_SYNC_MODE === 'cloud-only';
             const isCloudSyncEnabled = Boolean(cloudSyncClient);
 
             const isValidRoleId = (roleId) => Object.values(ROLES).some((role) => role.id === roleId);
@@ -632,25 +605,12 @@
                 setSubmissions(toSubmissionGroups(pruned));
                 return pruned;
             };
-            const readLocalSubmissionList = () => {
-                try {
-                    const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
-                    const parsed = parseSubmissionArray(raw);
-                    const pruned = toPrunedSubmissionList(parsed);
-                    if (pruned.length !== parsed.length) {
-                        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(pruned));
-                    }
-                    return pruned;
-                } catch {
-                    return [];
+            const ensureCloudSyncAvailable = (actionLabel = '작업') => {
+                if (!isCloudSyncEnabled || !cloudSyncClient) {
+                    alert(`클라우드 연결이 확인되지 않아 ${actionLabel}할 수 없습니다.`);
+                    return false;
                 }
-            };
-            const persistLocalSubmissions = (data) => {
-                const source = Array.isArray(data) ? data : [];
-                const pruned = toPrunedSubmissionList(source);
-                localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(pruned));
-                setSubmissions(toSubmissionGroups(pruned));
-                return pruned;
+                return true;
             };
             const saveSubmissionToCloud = async (item) => {
                 if (!cloudSyncClient || !item?.id) return;
@@ -714,21 +674,27 @@
 
             useEffect(() => {
                 let isMounted = true;
+                setSyncErrorMessage('');
                 setIsSyncBackendReady(false);
                 createCloudSyncClient()
                     .then((client) => {
                         if (!isMounted) return;
+                        if (!client) {
+                            throw new Error('CLOUD_CLIENT_UNAVAILABLE');
+                        }
                         setCloudSyncClient(client);
+                        setSyncErrorMessage('');
                         setIsSyncBackendReady(true);
                     })
                     .catch((error) => {
                         console.error('동기화 백엔드 초기화 실패:', error);
-                        if (!hasCloudSyncErrorAlertedRef.current) {
-                            hasCloudSyncErrorAlertedRef.current = true;
-                            alert('동기화 백엔드 초기화에 실패했습니다. local 모드로 동작합니다.');
-                        }
                         if (!isMounted) return;
                         setCloudSyncClient(null);
+                        if (error?.message === 'FIREBASE_CONFIG_MISSING') {
+                            setSyncErrorMessage('Firebase 설정값이 비어 있습니다.\n프로젝트 설정값 입력 후 새로고침하세요.');
+                        } else {
+                            setSyncErrorMessage('클라우드 연결 초기화에 실패했습니다.\n설정 확인 후 새로고침하세요.');
+                        }
                         setIsSyncBackendReady(true);
                     });
                 return () => { isMounted = false; };
@@ -804,91 +770,37 @@
                 previousSubmissionListRef.current = [];
                 hasInitialSubmissionSyncRef.current = false;
 
-                if (isCloudSyncEnabled && cloudSyncClient) {
-                    const unsubscribe = cloudSyncClient.subscribe(
-                        (cloudData) => {
-                            const pruned = applySubmissionList(cloudData);
-
-                            if (!hasInitialSubmissionSyncRef.current) {
-                                previousSubmissionListRef.current = pruned;
-                                hasInitialSubmissionSyncRef.current = true;
-                                return;
-                            }
-
-                            if (adminRole) {
-                                const messages = buildRoleNotifications(pruned, previousSubmissionListRef.current, adminRole);
-                                pushNotifications(messages);
-                            }
-                            previousSubmissionListRef.current = pruned;
-                        },
-                        (error) => {
-                            console.error('클라우드 동기화 실패:', error);
-                            if (!hasCloudSyncErrorAlertedRef.current) {
-                                hasCloudSyncErrorAlertedRef.current = true;
-                                alert('클라우드 동기화 연결에 실패했습니다. local 모드 데이터를 확인해주세요.');
-                            }
-                            const localFallback = readLocalSubmissionList();
-                            setSubmissions(toSubmissionGroups(localFallback));
-                        }
-                    );
-                    return () => {
-                        if (typeof unsubscribe === 'function') unsubscribe();
-                    };
+                if (!isCloudSyncEnabled || !cloudSyncClient) {
+                    setSubmissions({ construction: [], regular: [] });
+                    return;
                 }
 
-                const initialLocal = readLocalSubmissionList();
-                setSubmissions(toSubmissionGroups(initialLocal));
-                previousSubmissionListRef.current = initialLocal;
-                hasInitialSubmissionSyncRef.current = true;
+                const unsubscribe = cloudSyncClient.subscribe(
+                    (cloudData) => {
+                        const pruned = applySubmissionList(cloudData);
 
-                const handleStorageChange = (e) => {
-                    if (e.key !== LOCAL_STORAGE_KEY) return;
-                    const newData = toPrunedSubmissionList(parseSubmissionArray(e.newValue));
-                    const oldData = toPrunedSubmissionList(parseSubmissionArray(e.oldValue));
-                    setSubmissions(toSubmissionGroups(newData));
-                    if (adminRole) {
-                        const messages = buildRoleNotifications(newData, oldData, adminRole);
-                        pushNotifications(messages);
+                        if (!hasInitialSubmissionSyncRef.current) {
+                            previousSubmissionListRef.current = pruned;
+                            hasInitialSubmissionSyncRef.current = true;
+                            return;
+                        }
+
+                        if (adminRole) {
+                            const messages = buildRoleNotifications(pruned, previousSubmissionListRef.current, adminRole);
+                            pushNotifications(messages);
+                        }
+                        previousSubmissionListRef.current = pruned;
+                    },
+                    (error) => {
+                        console.error('클라우드 동기화 실패:', error);
+                        setCloudSyncClient(null);
+                        setSyncErrorMessage('클라우드 동기화 연결이 끊어졌습니다.\n새로고침 후 다시 확인하세요.');
                     }
-                    previousSubmissionListRef.current = newData;
+                );
+                return () => {
+                    if (typeof unsubscribe === 'function') unsubscribe();
                 };
-                window.addEventListener('storage', handleStorageChange);
-                return () => window.removeEventListener('storage', handleStorageChange);
             }, [adminRole, isSyncBackendReady, isCloudSyncEnabled, cloudSyncClient]);
-
-            useEffect(() => {
-                const runBackupReminder = () => {
-                    const now = new Date();
-                    if (Number.isNaN(now.getTime())) return;
-                    const isReminderWindow = isInOfficialBackupWindow(now);
-                    if (!isReminderWindow) return;
-
-                    const backupMeta = readBackupMeta();
-                    const hasOfficialBackupToday = hasOfficialBackupForDate(backupMeta?.officialBackupAt, now);
-                    if (hasOfficialBackupToday) return;
-
-                    const lastReminderAtRaw = localStorage.getItem(BACKUP_REMINDER_LAST_AT_KEY);
-                    const lastReminderAt = Number(lastReminderAtRaw);
-                    if (Number.isFinite(lastReminderAt) && (now.getTime() - lastReminderAt < BACKUP_REMINDER_REPEAT_MS)) {
-                        return;
-                    }
-                    localStorage.setItem(BACKUP_REMINDER_LAST_AT_KEY, `${now.getTime()}`);
-
-                    const toastMessage = adminRole === 'MASTER'
-                        ? '21:50 백업 시간입니다. 개별 백업을 실행해주세요.'
-                        : '21:50 공식백업 시간입니다. 주차관제실 계정으로 백업해주세요.';
-                    pushNotifications([toastMessage]);
-
-                    const alertMessage = adminRole === 'MASTER'
-                        ? '21:50 백업 시간입니다.\n관리자 화면에서 "주차관제실 개별 백업 (폴더 저장)"을 실행해주세요.'
-                        : '21:50 백업 시간입니다.\n주차관제실 계정으로 로그인 후 개별 백업을 실행해주세요.';
-                    alert(alertMessage);
-                };
-
-                runBackupReminder();
-                const timerId = window.setInterval(runBackupReminder, 30 * 1000);
-                return () => window.clearInterval(timerId);
-            }, [adminRole]);
 
             const checkTimeOverlap = (newData, type, excludeId = null) => {
                 const normalize = (s) => s?.replace(/\s+/g, '').toUpperCase();
@@ -1028,6 +940,9 @@
                     setCurrentView('home');
                     return { ok: false, blockedByRole: true };
                 }
+                if (!ensureCloudSyncAvailable('저장')) {
+                    return { ok: false, syncUnavailable: true };
+                }
                 const all = getAllSubmissions();
                 const nowIso = new Date().toISOString();
                 const receptionMeta = getReceptionMeta();
@@ -1135,12 +1050,8 @@
                 }
 
                 try {
-                    if (isCloudSyncEnabled) {
-                        await saveSubmissionToCloud(targetItem);
-                        applySubmissionList(nextSubmissions);
-                    } else {
-                        persistLocalSubmissions(nextSubmissions);
-                    }
+                    await saveSubmissionToCloud(targetItem);
+                    applySubmissionList(nextSubmissions);
                 } catch (error) {
                     console.error('신청서 저장 실패:', error);
                     alert('저장 중 오류가 발생했습니다. 네트워크 상태를 확인해주세요.');
@@ -1153,6 +1064,9 @@
             };
 
             const updateStatus = async (id, newStatus, reason = null, meta = {}) => {
+                if (!ensureCloudSyncAvailable('상태 변경')) {
+                    return { ok: false, syncUnavailable: true };
+                }
                 if (newStatus === 'rejected' && !(reason || '').trim()) {
                     alert('반려 사유를 입력해 주세요.');
                     return { ok: false };
@@ -1206,12 +1120,8 @@
                 const updatedItem = { ...target, ...updates };
                 const next = all.map(item => (item.id === id ? updatedItem : item));
                 try {
-                    if (isCloudSyncEnabled) {
-                        await saveSubmissionToCloud(updatedItem);
-                        applySubmissionList(next);
-                    } else {
-                        persistLocalSubmissions(next);
-                    }
+                    await saveSubmissionToCloud(updatedItem);
+                    applySubmissionList(next);
                     return { ok: true };
                 } catch (error) {
                     console.error('상태 업데이트 실패:', error);
@@ -1222,15 +1132,12 @@
 
             const deleteSubmissions = async (ids) => {
                 if (!ids || ids.length === 0) return;
+                if (!ensureCloudSyncAvailable('삭제')) return;
                 const idSet = new Set(ids);
                 const next = getAllSubmissions().filter(item => !idSet.has(item.id));
                 try {
-                    if (isCloudSyncEnabled) {
-                        await deleteSubmissionsFromCloud(Array.from(idSet));
-                        applySubmissionList(next);
-                    } else {
-                        persistLocalSubmissions(next);
-                    }
+                    await deleteSubmissionsFromCloud(Array.from(idSet));
+                    applySubmissionList(next);
                 } catch (error) {
                     console.error('삭제 실패:', error);
                     alert('삭제 중 오류가 발생했습니다.');
@@ -1264,8 +1171,41 @@
                 }
             };
 
+            if (!isSyncBackendReady) {
+                return (
+                    <div className="h-full w-full flex items-center justify-center px-6 bg-slate-50">
+                        <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-5 text-center shadow-sm">
+                            <p className="text-sm font-bold text-slate-700">클라우드 연결 확인 중...</p>
+                            <p className="text-xs text-slate-500 mt-2">잠시만 기다려주세요.</p>
+                        </div>
+                    </div>
+                );
+            }
+
+            if (isCloudOnlyMode && !isCloudSyncEnabled) {
+                return (
+                    <div className="h-full w-full flex items-center justify-center px-6 bg-slate-50">
+                        <div className="w-full max-w-sm rounded-2xl border border-rose-200 bg-white p-5 text-center shadow-sm">
+                            <p className="text-sm font-bold text-rose-700">클라우드 연결 준비 필요</p>
+                            <p className="text-xs text-slate-600 mt-2 whitespace-pre-line">{syncErrorMessage || 'provider 설정을 확인한 뒤 새로고침하세요.'}</p>
+                            <button
+                                onClick={() => window.location.reload()}
+                                className="mt-4 w-full py-2.5 rounded-lg bg-rose-600 text-white text-sm font-bold hover:bg-rose-700"
+                            >
+                                새로고침
+                            </button>
+                        </div>
+                    </div>
+                );
+            }
+
             return (
                 <div className="flex flex-col h-full bg-slate-50 relative">
+                    {DATA_SYNC_PROVIDER === 'placeholder' && (
+                        <div className="px-4 py-2 bg-amber-50 border-b border-amber-200 text-[12px] font-semibold text-amber-700 text-center">
+                            {PLACEHOLDER_PROVIDER_NOTICE}
+                        </div>
+                    )}
                     <header className="bg-slate-900 text-white px-4 sm:px-5 py-3 sm:py-4 shrink-0 z-10 shadow-lg safe-area-top">
                         <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-2.5 min-w-0">
@@ -1436,74 +1376,6 @@
             const [checkingItem, setCheckingItem] = useState(null);
             const [firstCheckerName, setFirstCheckerName] = useState('');
             const [firstCheckerSignature, setFirstCheckerSignature] = useState(null);
-            const [isBackingUpLocally, setIsBackingUpLocally] = useState(false);
-            const [backupMeta, setBackupMeta] = useState(() => readBackupMeta());
-            const [backupClockTick, setBackupClockTick] = useState(Date.now());
-            const normalizeBackupName = (value, fallback = 'unknown') => {
-                const cleaned = `${value || ''}`
-                    .trim()
-                    .replace(/\s+/g, '_')
-                    .replace(/[\\/:*?"<>|]/g, '')
-                    .replace(/[^\w\u3131-\u318E\uAC00-\uD7A3._-]/g, '');
-                return (cleaned || fallback).slice(0, 60);
-            };
-            const getDateParts = (value) => {
-                const d = new Date(value || Date.now());
-                if (Number.isNaN(d.getTime())) return null;
-                const yyyy = `${d.getFullYear()}`;
-                const mm = `${d.getMonth() + 1}`.padStart(2, '0');
-                const dd = `${d.getDate()}`.padStart(2, '0');
-                const hh = `${d.getHours()}`.padStart(2, '0');
-                const min = `${d.getMinutes()}`.padStart(2, '0');
-                return { yyyy, mm, dd, hh, min };
-            };
-            const getItemBackupVersion = (item) => `${item?.updatedAt || item?.submittedAt || ''}|${item?.status || ''}|${item?.type || ''}`;
-            const getBackupTypeFolder = (item) => item?.type === 'construction' ? '공사방문' : '정기권';
-            const getBackupStatusFolder = (item) => normalizeBackupName(getStatusLabel(item?.status || ''), '상태미상');
-            const getBackupCarName = (item) => {
-                if (item?.type === 'construction') {
-                    const cars = Array.isArray(item?.vehicles) ? item.vehicles.filter(Boolean) : [];
-                    return normalizeBackupName(cars.join('_'), '차량없음');
-                }
-                return normalizeBackupName(item?.carNumber, '차량없음');
-            };
-            const buildBackupFileName = (item) => {
-                const submittedParts = getDateParts(item?.submittedAt) || getDateParts(Date.now());
-                const timeText = `${submittedParts.yyyy}${submittedParts.mm}${submittedParts.dd}_${submittedParts.hh}${submittedParts.min}`;
-                const owner = normalizeBackupName(item?.type === 'construction' ? item?.companyName : item?.name, '신청자');
-                const car = getBackupCarName(item);
-                const docId = normalizeBackupName(item?.id, `doc_${Date.now()}`);
-                return `${timeText}_${docId}_${owner}_${car}.pdf`;
-            };
-
-            const lastBackupDate = backupMeta?.lastBackupAt ? new Date(backupMeta.lastBackupAt) : null;
-            const hasValidLastBackupStamp = !!lastBackupDate && !Number.isNaN(lastBackupDate.getTime());
-            const nowForBackup = new Date(backupClockTick);
-            const nowMinuteOfDay = toMinutesOfDay(nowForBackup);
-            const isBeforeBackupWindow = nowMinuteOfDay >= 0 && nowMinuteOfDay < OFFICIAL_BACKUP_WINDOW.startMinutes;
-            const isInBackupWindow = nowMinuteOfDay >= OFFICIAL_BACKUP_WINDOW.startMinutes && nowMinuteOfDay <= OFFICIAL_BACKUP_WINDOW.endMinutes;
-            const isAfterBackupWindow = nowMinuteOfDay > OFFICIAL_BACKUP_WINDOW.endMinutes;
-            const hasOfficialBackupToday = hasOfficialBackupForDate(backupMeta?.officialBackupAt, nowForBackup);
-            const officialBackupDate = backupMeta?.officialBackupAt ? new Date(backupMeta.officialBackupAt) : null;
-            const hasOfficialStamp = !!officialBackupDate && !Number.isNaN(officialBackupDate.getTime());
-            const recentBackupText = hasValidLastBackupStamp
-                ? `최근 백업: ${lastBackupDate.toLocaleString('ko-KR')}`
-                : '최근 백업: 없음';
-            const backupStatusText = hasOfficialBackupToday
-                ? `오늘 공식 백업 완료: ${hasOfficialStamp ? officialBackupDate.toLocaleString('ko-KR') : '-' }`
-                : (isBeforeBackupWindow
-                    ? '오늘 공식 백업 대기 (21:50~22:00)'
-                    : (isInBackupWindow
-                        ? '공식 백업 시간입니다 (21:50~22:00)'
-                        : (isAfterBackupWindow ? '오늘 공식 백업 미완료 (즉시 실행 필요)' : '오늘 공식 백업 상태 확인 필요')));
-            const backupStatusClass = hasOfficialBackupToday
-                ? 'text-emerald-600'
-                : (isAfterBackupWindow ? 'text-rose-600' : (isInBackupWindow ? 'text-amber-600' : 'text-slate-500'));
-
-            useEffect(() => {
-                const timerId = window.setInterval(() => setBackupClockTick(Date.now()), 30 * 1000);
-                return () => window.clearInterval(timerId);
-            }, []);
             const yearOptions = useMemo(() => {
                 const currentYear = new Date().getFullYear();
                 const years = new Set([currentYear]);
@@ -1878,83 +1750,6 @@
                 } finally { setIsZipping(false); }
             };
 
-            const handleLocalFolderBackup = async () => {
-                if (adminRole !== 'MASTER') return;
-                if (isBackingUpLocally) return;
-                if (typeof window.showDirectoryPicker !== 'function') {
-                    alert('현재 브라우저에서는 폴더 직접 백업을 지원하지 않습니다. (Chromium 계열 권장)');
-                    return;
-                }
-
-                const allItems = [...(submissions.construction || []), ...(submissions.regular || [])]
-                    .sort((a, b) => new Date(a.submittedAt || 0) - new Date(b.submittedAt || 0));
-                if (allItems.length === 0) {
-                    alert('백업할 데이터가 없습니다.');
-                    return;
-                }
-
-                setIsBackingUpLocally(true);
-                try {
-                    const backupTriggeredAt = new Date();
-                    const baseDir = await window.showDirectoryPicker({ id: 'parking-master-backup', mode: 'readwrite' });
-                    const nowParts = getDateParts(Date.now());
-                    const monthDir = await baseDir.getDirectoryHandle(`${nowParts.yyyy}-${nowParts.mm}`, { create: true });
-                    const dayDir = await monthDir.getDirectoryHandle(`${nowParts.yyyy}-${nowParts.mm}-${nowParts.dd}`, { create: true });
-
-                    const nextVersions = { ...(backupMeta?.versions || {}) };
-                    let createdCount = 0;
-                    let skippedCount = 0;
-                    let failedCount = 0;
-
-                    for (const item of allItems) {
-                        const version = getItemBackupVersion(item);
-                        if (item?.id && nextVersions[item.id] === version) {
-                            skippedCount += 1;
-                            continue;
-                        }
-
-                        try {
-                            const typeDir = await dayDir.getDirectoryHandle(getBackupTypeFolder(item), { create: true });
-                            const statusDir = await typeDir.getDirectoryHandle(getBackupStatusFolder(item), { create: true });
-                            const fileName = buildBackupFileName(item);
-
-                            const pdfBuffer = await buildBundledApplicationsPdf([item]);
-                            const fileHandle = await statusDir.getFileHandle(fileName, { create: true });
-                            const writable = await fileHandle.createWritable();
-                            await writable.write(pdfBuffer);
-                            await writable.close();
-                            if (item?.id) nextVersions[item.id] = version;
-                            createdCount += 1;
-                        } catch {
-                            failedCount += 1;
-                        }
-                    }
-
-                    const backupTriggeredAtIso = backupTriggeredAt.toISOString();
-                    const isOfficialBackupRun = isInOfficialBackupWindow(backupTriggeredAt);
-                    const isOfficialBackupAccepted = isOfficialBackupRun && failedCount === 0;
-                    const nextMeta = {
-                        lastBackupAt: backupTriggeredAtIso,
-                        officialBackupAt: isOfficialBackupAccepted ? backupTriggeredAtIso : (backupMeta?.officialBackupAt || null),
-                        versions: nextVersions
-                    };
-                    writeBackupMeta(nextMeta);
-                    setBackupMeta(nextMeta);
-                    const backupAcceptedText = isOfficialBackupAccepted
-                        ? '공식(21:50~22:00, 실패 0건)'
-                        : (isOfficialBackupRun ? '임시(공식 시간 내 실패 건 존재)' : '임시(공식 시간 외)');
-                    alert(`개별 백업 완료\n- 신규 저장: ${createdCount}건\n- 중복 건너뜀: ${skippedCount}건\n- 실패: ${failedCount}건\n- 백업 인정: ${backupAcceptedText}`);
-                } catch (error) {
-                    if (error?.name === 'AbortError') {
-                        alert('백업 폴더 선택이 취소되었습니다.');
-                    } else {
-                        alert('개별 백업 중 오류가 발생했습니다.');
-                    }
-                } finally {
-                    setIsBackingUpLocally(false);
-                }
-            };
-
             const handleDeleteSelected = async () => {
                 if (adminRole !== 'MASTER') return;
                 if (selectedIds.size === 0) { alert("삭제할 항목을 선택해주세요."); return; }
@@ -2121,24 +1916,6 @@
                                 </button>
                             )}
                         </div>
-                        {adminRole === 'MASTER' && (
-                            <div className="pb-3">
-                                <button
-                                    onClick={handleLocalFolderBackup}
-                                    disabled={isBackingUpLocally}
-                                    className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-300 text-white py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-lg transition active:scale-95"
-                                >
-                                    {isBackingUpLocally ? <RotateCw className="animate-spin" size={16}/> : <Download size={16}/>}
-                                    <span>{isBackingUpLocally ? '개별 백업 진행중' : '주차관제실 개별 백업 (폴더 저장)'}</span>
-                                </button>
-                                <div className={`mt-1 px-1 text-[11px] font-medium ${backupStatusClass}`}>
-                                    {backupStatusText}
-                                </div>
-                                <div className="mt-0.5 px-1 text-[10px] text-slate-400">
-                                    {recentBackupText}
-                                </div>
-                            </div>
-                        )}
                     </div>
 
                     <div className="flex-1 overflow-y-auto p-5 space-y-4 bg-slate-50">
