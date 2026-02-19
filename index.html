@@ -398,9 +398,12 @@
             );
         }
 
-        const FormInput = ({ label, ...props }) => (
+        const FormInput = ({ label, requiredMark = false, ...props }) => (
             <div className="mb-4">
-                <label className="block text-xs font-bold text-slate-500 mb-1.5 ml-1">{label}</label>
+                <label className="block text-xs font-bold text-slate-500 mb-1.5 ml-1 flex items-center gap-1.5">
+                    <span>{label}</span>
+                    {requiredMark && <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-600 font-extrabold">필수</span>}
+                </label>
                 <input {...props} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition-all placeholder:text-slate-400 text-sm font-medium disabled:bg-slate-100 disabled:text-slate-400" />
             </div>
         );
@@ -691,7 +694,7 @@
                 construction: {
                     companyName: '업체명',
                     visitorName: '방문자 성명',
-                    visitUnit: '방문 호수',
+                    location: '내용',
                     visitSchedule: '방문 일시',
                     driverPhone: '연락처',
                     vehicles: '차량번호',
@@ -755,7 +758,7 @@
                 if (type === 'construction') {
                     if (!hasText(data.companyName)) missing.push('companyName');
                     if (!hasText(data.visitorName)) missing.push('visitorName');
-                    if (!hasText(data.visitUnit)) missing.push('visitUnit');
+                    if (!hasText(data.location)) missing.push('location');
                     if (!hasText(data.startDate) || !hasText(data.endDate) || !hasText(data.startTime) || !hasText(data.endTime)) missing.push('visitSchedule');
                     if (!hasPhone(data.driverPhone)) missing.push('driverPhone');
                     const vehicles = Array.isArray(data.vehicles) ? data.vehicles : [];
@@ -2294,11 +2297,11 @@
                                 {visitPurpose==='부동산'&&<p className="text-xs text-indigo-500 mt-2 font-medium flex items-center gap-1"><Clock size={12}/> 부동산은 2시간 제한됩니다.</p>}
                             </div>
                             <div className="space-y-1">
-                                <FormInput label="업체명" required value={formData.companyName} onChange={e=>setFormData({...formData, companyName:e.target.value})} placeholder={visitPurpose === '기타' ? "" : (visitPurpose === '공사' ? "예: OO인테리어" : "예: 행복부동산")}/>
-                                <FormInput label="방문자 성명" required value={formData.visitorName} onChange={e=>setFormData({...formData, visitorName:e.target.value})} placeholder={visitPurpose === '기타' ? "" : "홍길동"}/>
-                                <FormInput label="방문 호수" required value={formData.visitUnit} onChange={e=>setFormData({...formData, visitUnit:e.target.value.replace(/[^0-9]/g, '')})} placeholder="예: 101"/>
-                                <FormInput label="내용" value={formData.location} onChange={e=>setFormData({...formData, location:e.target.value})} placeholder={visitPurpose === '공사' ? '예: 인테리어 공사' : '예: 매물 확인'}/>
-                                <FormInput label="연락처" type="tel" required value={formData.driverPhone} onChange={e=>setFormData({...formData, driverPhone:e.target.value.replace(/[^0-9]/g,'')})} placeholder="01012345678"/>
+                                <FormInput label="업체명" required requiredMark value={formData.companyName} onChange={e=>setFormData({...formData, companyName:e.target.value})} placeholder={visitPurpose === '기타' ? "" : (visitPurpose === '공사' ? "예: OO인테리어" : "예: 행복부동산")}/>
+                                <FormInput label="방문자 성명" required requiredMark value={formData.visitorName} onChange={e=>setFormData({...formData, visitorName:e.target.value})} placeholder={visitPurpose === '기타' ? "" : "홍길동"}/>
+                                <FormInput label="방문 호수" value={formData.visitUnit} onChange={e=>setFormData({...formData, visitUnit:e.target.value.replace(/[^0-9]/g, '')})} placeholder="예: 101"/>
+                                <FormInput label="내용" required requiredMark value={formData.location} onChange={e=>setFormData({...formData, location:e.target.value})} placeholder={visitPurpose === '공사' ? '예: 인테리어 공사' : '예: 매물 확인'}/>
+                                <FormInput label="연락처" type="tel" required requiredMark value={formData.driverPhone} onChange={e=>setFormData({...formData, driverPhone:e.target.value.replace(/[^0-9]/g,'')})} placeholder="01012345678"/>
                             </div>
                             
                             <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 mb-6">
@@ -2314,7 +2317,7 @@
                             </div>
 
                             <div className="mb-6">
-                                <label className="text-sm font-bold text-slate-800 mb-2 block">차량 번호</label>
+                                <label className="text-sm font-bold text-slate-800 mb-2 flex items-center gap-1.5"><span>차량 번호</span><span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-600 font-extrabold">필수</span></label>
                                 <div className="space-y-2">
                                     {/* 차량 1대만 입력받도록 수정 */}
                                     <div className="flex gap-2">
@@ -2346,7 +2349,7 @@
                                     </div>
                                 )}
                                 <div className="flex justify-between items-end mb-2">
-                                    <label className="text-sm font-bold text-slate-800 flex items-center gap-2"><PenTool size={16}/> {userRole ? '대리 접수 서명' : '신청자 서명'}</label>
+                                    <label className="text-sm font-bold text-slate-800 flex items-center gap-2"><PenTool size={16}/> {userRole ? '대리 접수 서명' : '신청자 서명'}<span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-600 font-extrabold">필수</span></label>
                                     <span className="text-xs font-bold text-slate-500">{getFormattedDate()}</span>
                                 </div>
                                 <SignaturePad onSave={(data) => setFormData(prev => ({...prev, signature: data}))} initialData={formData.signature} />
@@ -2475,7 +2478,7 @@
                                     </div>
                                 )}
                                 <div className="flex justify-between items-end mb-2">
-                                    <label className="text-sm font-bold text-slate-800 flex items-center gap-2"><PenTool size={16}/> {userRole ? '대리 접수 서명' : '신청자 서명'}</label>
+                                    <label className="text-sm font-bold text-slate-800 flex items-center gap-2"><PenTool size={16}/> {userRole ? '대리 접수 서명' : '신청자 서명'}<span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-600 font-extrabold">필수</span></label>
                                     <span className="text-xs font-bold text-slate-500">{getFormattedDate()}</span>
                                 </div>
                                 <SignaturePad onSave={(data) => setFormData(prev => ({...prev, signature: data}))} initialData={formData.signature} />
