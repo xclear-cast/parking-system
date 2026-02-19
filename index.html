@@ -100,6 +100,72 @@
             'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/nanumgothic/NanumGothic-Regular.ttf',
             'https://raw.githubusercontent.com/googlefonts/nanumgothic/master/fonts/ttf/NanumGothic-Regular.ttf'
         ];
+        // 동기화 백엔드 플러그인: 업체 확정 전에는 local 유지, 확정 후 provider만 바꾸면 연결 가능
+        const DATA_SYNC_PROVIDER = 'local'; // 'local' | 'firebase'
+        const DATA_SYNC_COLLECTION = 'parking_submissions_v1';
+        const DATA_SYNC_CONFIG = {
+            firebase: {
+                // TODO: Firebase 콘솔 > 프로젝트 설정 > 웹 앱 구성값으로 채우세요.
+                apiKey: '',
+                authDomain: '',
+                projectId: '',
+                storageBucket: '',
+                messagingSenderId: '',
+                appId: ''
+            }
+        };
+        const hasFirebaseConfig = (config) =>
+            Boolean(config?.apiKey && config?.projectId && config?.appId);
+        const createCloudSyncClient = async () => {
+            if (DATA_SYNC_PROVIDER !== 'firebase') return null;
+            const firebaseConfig = DATA_SYNC_CONFIG.firebase || {};
+            if (!hasFirebaseConfig(firebaseConfig)) {
+                console.warn('Firebase 설정값이 비어 있어 local 모드로 동작합니다.');
+                return null;
+            }
+            const [{ initializeApp }, firestore] = await Promise.all([
+                import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js'),
+                import('https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js')
+            ]);
+            const app = initializeApp(firebaseConfig);
+            const db = firestore.getFirestore(app);
+            const submissionsCol = firestore.collection(db, DATA_SYNC_COLLECTION);
+
+            return {
+                provider: 'firebase',
+                subscribe: (onData, onError) => {
+                    const q = firestore.query(submissionsCol, firestore.orderBy('submittedAt', 'desc'));
+                    return firestore.onSnapshot(
+                        q,
+                        (snapshot) => {
+                            const list = snapshot.docs.map((snap) => {
+                                const data = snap.data() || {};
+                                return { ...data, id: data.id || snap.id };
+                            });
+                            onData(list);
+                        },
+                        onError
+                    );
+                },
+                upsert: async (item) => {
+                    if (!item?.id) return;
+                    await firestore.setDoc(firestore.doc(submissionsCol, item.id), { ...item, id: item.id });
+                },
+                removeMany: async (ids) => {
+                    const normalizedIds = Array.isArray(ids) ? ids.filter(Boolean) : [];
+                    if (normalizedIds.length === 0) return;
+                    if (normalizedIds.length === 1) {
+                        await firestore.deleteDoc(firestore.doc(submissionsCol, normalizedIds[0]));
+                        return;
+                    }
+                    const batch = firestore.writeBatch(db);
+                    normalizedIds.forEach((id) => {
+                        batch.delete(firestore.doc(submissionsCol, id));
+                    });
+                    await batch.commit();
+                }
+            };
+        };
         
         // --- 권한 및 상태 정의 ---
         const ROLES = {
@@ -499,6 +565,12 @@
             const [showAdminLogin, setShowAdminLogin] = useState(false);
             const [notifications, setNotifications] = useState([]);
             const [showNotificationCenter, setShowNotificationCenter] = useState(false);
+            const [cloudSyncClient, setCloudSyncClient] = useState(null);
+            const [isSyncBackendReady, setIsSyncBackendReady] = useState(false);
+            const previousSubmissionListRef = useRef([]);
+            const hasInitialSubmissionSyncRef = useRef(false);
+            const hasCloudSyncErrorAlertedRef = useRef(false);
+            const isCloudSyncEnabled = Boolean(cloudSyncClient);
 
             const isValidRoleId = (roleId) => Object.values(ROLES).some((role) => role.id === roleId);
             const saveAdminSession = (roleId, loggedInAt = new Date().toISOString()) => {
@@ -547,27 +619,49 @@
                     regular: source.filter(item => item.type === 'regular').sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt))
                 };
             };
-
-            const readLocalSubmissions = () => {
+            const toSubmissionList = (grouped = submissions) => [
+                ...(grouped?.construction || []),
+                ...(grouped?.regular || [])
+            ];
+            const toPrunedSubmissionList = (items) => {
+                const source = Array.isArray(items) ? items : [];
+                return pruneSubmissionsByRetention(source, STORAGE_RETENTION);
+            };
+            const applySubmissionList = (items) => {
+                const pruned = toPrunedSubmissionList(items);
+                setSubmissions(toSubmissionGroups(pruned));
+                return pruned;
+            };
+            const readLocalSubmissionList = () => {
                 try {
                     const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
                     const parsed = parseSubmissionArray(raw);
-                    const pruned = pruneSubmissionsByRetention(parsed, STORAGE_RETENTION);
+                    const pruned = toPrunedSubmissionList(parsed);
                     if (pruned.length !== parsed.length) {
                         localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(pruned));
                     }
-                    return toSubmissionGroups(pruned);
-                } catch { return { construction: [], regular: [] }; }
+                    return pruned;
+                } catch {
+                    return [];
+                }
             };
-
             const persistLocalSubmissions = (data) => {
                 const source = Array.isArray(data) ? data : [];
-                const pruned = pruneSubmissionsByRetention(source, STORAGE_RETENTION);
+                const pruned = toPrunedSubmissionList(source);
                 localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(pruned));
                 setSubmissions(toSubmissionGroups(pruned));
+                return pruned;
+            };
+            const saveSubmissionToCloud = async (item) => {
+                if (!cloudSyncClient || !item?.id) return;
+                await cloudSyncClient.upsert(item);
+            };
+            const deleteSubmissionsFromCloud = async (ids) => {
+                if (!cloudSyncClient) return;
+                await cloudSyncClient.removeMany(ids);
             };
 
-            const getAllSubmissions = () => [...submissions.construction, ...submissions.regular];
+            const getAllSubmissions = () => toSubmissionList(submissions);
             const unreadNotificationCount = notifications.reduce((count, item) => count + (item.read ? 0 : 1), 0);
             const toastNotifications = notifications.filter(item => !item.read).slice(0, 3);
             const markAllNotificationsRead = () => setNotifications(prev => prev.map(item => (item.read ? item : { ...item, read: true })));
@@ -617,6 +711,28 @@
 
                 return messages;
             };
+
+            useEffect(() => {
+                let isMounted = true;
+                setIsSyncBackendReady(false);
+                createCloudSyncClient()
+                    .then((client) => {
+                        if (!isMounted) return;
+                        setCloudSyncClient(client);
+                        setIsSyncBackendReady(true);
+                    })
+                    .catch((error) => {
+                        console.error('동기화 백엔드 초기화 실패:', error);
+                        if (!hasCloudSyncErrorAlertedRef.current) {
+                            hasCloudSyncErrorAlertedRef.current = true;
+                            alert('동기화 백엔드 초기화에 실패했습니다. local 모드로 동작합니다.');
+                        }
+                        if (!isMounted) return;
+                        setCloudSyncClient(null);
+                        setIsSyncBackendReady(true);
+                    });
+                return () => { isMounted = false; };
+            }, []);
 
             useEffect(() => {
                 try {
@@ -684,21 +800,61 @@
             }, [adminRole, adminLoginAt]);
 
             useEffect(() => {
-                setSubmissions(readLocalSubmissions());
-                const handleStorageChange = (e) => {
-                    if (e.key === LOCAL_STORAGE_KEY) {
-                        const newData = parseSubmissionArray(e.newValue);
-                        const oldData = parseSubmissionArray(e.oldValue);
-                        setSubmissions(readLocalSubmissions());
-                        if (adminRole) {
-                            const messages = buildRoleNotifications(newData, oldData, adminRole);
-                            pushNotifications(messages);
+                if (!isSyncBackendReady) return;
+                previousSubmissionListRef.current = [];
+                hasInitialSubmissionSyncRef.current = false;
+
+                if (isCloudSyncEnabled && cloudSyncClient) {
+                    const unsubscribe = cloudSyncClient.subscribe(
+                        (cloudData) => {
+                            const pruned = applySubmissionList(cloudData);
+
+                            if (!hasInitialSubmissionSyncRef.current) {
+                                previousSubmissionListRef.current = pruned;
+                                hasInitialSubmissionSyncRef.current = true;
+                                return;
+                            }
+
+                            if (adminRole) {
+                                const messages = buildRoleNotifications(pruned, previousSubmissionListRef.current, adminRole);
+                                pushNotifications(messages);
+                            }
+                            previousSubmissionListRef.current = pruned;
+                        },
+                        (error) => {
+                            console.error('클라우드 동기화 실패:', error);
+                            if (!hasCloudSyncErrorAlertedRef.current) {
+                                hasCloudSyncErrorAlertedRef.current = true;
+                                alert('클라우드 동기화 연결에 실패했습니다. local 모드 데이터를 확인해주세요.');
+                            }
+                            const localFallback = readLocalSubmissionList();
+                            setSubmissions(toSubmissionGroups(localFallback));
                         }
+                    );
+                    return () => {
+                        if (typeof unsubscribe === 'function') unsubscribe();
+                    };
+                }
+
+                const initialLocal = readLocalSubmissionList();
+                setSubmissions(toSubmissionGroups(initialLocal));
+                previousSubmissionListRef.current = initialLocal;
+                hasInitialSubmissionSyncRef.current = true;
+
+                const handleStorageChange = (e) => {
+                    if (e.key !== LOCAL_STORAGE_KEY) return;
+                    const newData = toPrunedSubmissionList(parseSubmissionArray(e.newValue));
+                    const oldData = toPrunedSubmissionList(parseSubmissionArray(e.oldValue));
+                    setSubmissions(toSubmissionGroups(newData));
+                    if (adminRole) {
+                        const messages = buildRoleNotifications(newData, oldData, adminRole);
+                        pushNotifications(messages);
                     }
+                    previousSubmissionListRef.current = newData;
                 };
                 window.addEventListener('storage', handleStorageChange);
                 return () => window.removeEventListener('storage', handleStorageChange);
-            }, [adminRole]);
+            }, [adminRole, isSyncBackendReady, isCloudSyncEnabled, cloudSyncClient]);
 
             useEffect(() => {
                 const runBackupReminder = () => {
@@ -865,14 +1021,14 @@
                 return missing;
             };
 
-            const handleSave = (type, data, isEdit, docId) => {
+            const handleSave = async (type, data, isEdit, docId) => {
                 if (type === 'regular' && isRegularAccessBlockedForRole(adminRole)) {
                     alert(REGULAR_ACCESS_DENIED_MESSAGE);
                     setEditingItem(null);
                     setCurrentView('home');
                     return { ok: false, blockedByRole: true };
                 }
-                const all = [...submissions.construction, ...submissions.regular];
+                const all = getAllSubmissions();
                 const nowIso = new Date().toISOString();
                 const receptionMeta = getReceptionMeta();
                 const proxySubmitterName = receptionMeta.receptionType === 'proxy'
@@ -907,42 +1063,46 @@
                     firstCheckedAt: null,
                     finalApprovalSignatureText: null
                 };
-                
-                let nextSubmissions;
+
+                let nextSubmissions = [];
+                let targetItem = null;
                 if (isEdit && docId) {
-                    nextSubmissions = all.map(item => {
-                        if (item.id !== docId) return item;
-                        const actor = getCurrentActorName('신청자');
-                        const logs = mergeActivityLogs(
-                            item,
-                            createActivityLogEntry({
+                    const baseItem = all.find(item => item.id === docId);
+                    if (!baseItem) {
+                        alert('수정할 데이터를 찾을 수 없습니다.');
+                        return { ok: false, notFound: true };
+                    }
+                    const actor = getCurrentActorName('신청자');
+                    const logs = mergeActivityLogs(
+                        baseItem,
+                        createActivityLogEntry({
+                            at: nowIso,
+                            action: '수정',
+                            detail: `${requestTypeLabel} 신청서 수정 (${receptionLabel})`,
+                            actor
+                        }),
+                        baseItem.status !== firstCheckDefaults.status
+                            ? createActivityLogEntry({
                                 at: nowIso,
-                                action: '수정',
-                                detail: `${requestTypeLabel} 신청서 수정 (${receptionLabel})`,
+                                action: '상태변경',
+                                detail: `상태 변경: ${getStatusLabel(baseItem.status)} -> ${getStatusLabel(firstCheckDefaults.status)} (수정 후 재검토)`,
                                 actor
-                            }),
-                            item.status !== firstCheckDefaults.status
-                                ? createActivityLogEntry({
-                                    at: nowIso,
-                                    action: '상태변경',
-                                    detail: `상태 변경: ${getStatusLabel(item.status)} -> ${getStatusLabel(firstCheckDefaults.status)} (수정 후 재검토)`,
-                                    actor
-                                })
-                                : null
-                        );
-                        return {
-                            ...item,
-                            ...cleanData,
-                            ...firstCheckDefaults,
-                            approvedBy: null,
-                            approvedAt: null,
-                            finalApprovalSignatureText: null,
-                            rejectionReason: null,
-                            rejectedBy: null,
-                            rejectedAt: null,
-                            activityLogs: logs
-                        };
-                    });
+                            })
+                            : null
+                    );
+                    targetItem = {
+                        ...baseItem,
+                        ...cleanData,
+                        ...firstCheckDefaults,
+                        approvedBy: null,
+                        approvedAt: null,
+                        finalApprovalSignatureText: null,
+                        rejectionReason: null,
+                        rejectedBy: null,
+                        rejectedAt: null,
+                        activityLogs: logs
+                    };
+                    nextSubmissions = all.map(item => (item.id === docId ? targetItem : item));
                 } else {
                     const submitterActor = getCurrentActorName('신청자');
                     const initialLogEntries = [
@@ -963,7 +1123,7 @@
                             })
                         );
                     }
-                    const newItem = {
+                    targetItem = {
                         id: `doc-${Date.now()}-${Math.random().toString(36).substr(2,5)}`,
                         type,
                         ...firstCheckDefaults,
@@ -971,71 +1131,110 @@
                         ...cleanData,
                         activityLogs: mergeActivityLogs(null, ...initialLogEntries)
                     };
-                    nextSubmissions = [newItem, ...all];
+                    nextSubmissions = [targetItem, ...all];
                 }
-                persistLocalSubmissions(nextSubmissions);
+
+                try {
+                    if (isCloudSyncEnabled) {
+                        await saveSubmissionToCloud(targetItem);
+                        applySubmissionList(nextSubmissions);
+                    } else {
+                        persistLocalSubmissions(nextSubmissions);
+                    }
+                } catch (error) {
+                    console.error('신청서 저장 실패:', error);
+                    alert('저장 중 오류가 발생했습니다. 네트워크 상태를 확인해주세요.');
+                    return { ok: false, error };
+                }
                 setEditingItem(null);
                 setLastSubmissionType(type === 'construction' ? '공사/방문 등록' : '정기권 신청');
                 setCurrentView('success');
                 return { ok: true };
             };
 
-            const updateStatus = (id, newStatus, reason = null, meta = {}) => {
+            const updateStatus = async (id, newStatus, reason = null, meta = {}) => {
                 if (newStatus === 'rejected' && !(reason || '').trim()) {
                     alert('반려 사유를 입력해 주세요.');
                     return { ok: false };
                 }
                 const nowIso = new Date().toISOString();
                 const all = getAllSubmissions();
-                const next = all.map(item => {
-                    if (item.id !== id) return item;
-                    const updates = { status: newStatus };
-                    const roleInfo = ROLES[Object.keys(ROLES).find(k => ROLES[k].id === adminRole)];
-                    const name = roleInfo ? roleInfo.name : 'Unknown';
-                    let statusChangeDetail = `상태 변경: ${getStatusLabel(item.status)} -> ${getStatusLabel(newStatus)}`;
+                const target = all.find(item => item.id === id);
+                if (!target) {
+                    alert('처리할 신청서를 찾지 못했습니다.');
+                    return { ok: false, notFound: true };
+                }
 
-                    if (newStatus === 'checked') {
-                        updates.checkedBy = name;
-                        updates.firstCheckedManagerName = meta.managerName || item.firstCheckedManagerName || null;
-                        updates.firstCheckedManagerRole = meta.managerRole || adminRole || item.firstCheckedManagerRole || null;
-                        updates.firstCheckedManagerSignature = meta.managerSignature || item.firstCheckedManagerSignature || null;
-                        updates.firstCheckedAt = nowIso;
-                        if (meta.managerName) {
-                            statusChangeDetail += ` (담당자: ${meta.managerName})`;
-                        }
+                const roleInfo = ROLES[Object.keys(ROLES).find(k => ROLES[k].id === adminRole)];
+                const name = roleInfo ? roleInfo.name : 'Unknown';
+                const updates = { status: newStatus };
+                let statusChangeDetail = `상태 변경: ${getStatusLabel(target.status)} -> ${getStatusLabel(newStatus)}`;
+
+                if (newStatus === 'checked') {
+                    updates.checkedBy = name;
+                    updates.firstCheckedManagerName = meta.managerName || target.firstCheckedManagerName || null;
+                    updates.firstCheckedManagerRole = meta.managerRole || adminRole || target.firstCheckedManagerRole || null;
+                    updates.firstCheckedManagerSignature = meta.managerSignature || target.firstCheckedManagerSignature || null;
+                    updates.firstCheckedAt = nowIso;
+                    if (meta.managerName) {
+                        statusChangeDetail += ` (담당자: ${meta.managerName})`;
                     }
-                    else if (newStatus === 'approved') {
-                        updates.approvedBy = FINAL_APPROVER_SIGNATURE_TEXT;
-                        updates.approvedAt = nowIso;
-                        updates.finalApprovalSignatureText = FINAL_APPROVER_SIGNATURE_TEXT;
+                }
+                else if (newStatus === 'approved') {
+                    updates.approvedBy = FINAL_APPROVER_SIGNATURE_TEXT;
+                    updates.approvedAt = nowIso;
+                    updates.finalApprovalSignatureText = FINAL_APPROVER_SIGNATURE_TEXT;
+                }
+                else if (newStatus === 'rejected') {
+                    updates.rejectionReason = (reason || '').trim();
+                    updates.rejectedBy = name;
+                    updates.rejectedAt = nowIso;
+                    updates.finalApprovalSignatureText = null;
+                    statusChangeDetail += ` (사유: ${(reason || '').trim()})`;
+                }
+
+                updates.activityLogs = mergeActivityLogs(
+                    target,
+                    createActivityLogEntry({
+                        at: nowIso,
+                        action: '상태변경',
+                        detail: statusChangeDetail,
+                        actor: name
+                    })
+                );
+
+                const updatedItem = { ...target, ...updates };
+                const next = all.map(item => (item.id === id ? updatedItem : item));
+                try {
+                    if (isCloudSyncEnabled) {
+                        await saveSubmissionToCloud(updatedItem);
+                        applySubmissionList(next);
+                    } else {
+                        persistLocalSubmissions(next);
                     }
-                    else if (newStatus === 'rejected') {
-                        updates.rejectionReason = (reason || '').trim();
-                        updates.rejectedBy = name;
-                        updates.rejectedAt = nowIso;
-                        updates.finalApprovalSignatureText = null;
-                        statusChangeDetail += ` (사유: ${(reason || '').trim()})`;
-                    }
-                    updates.activityLogs = mergeActivityLogs(
-                        item,
-                        createActivityLogEntry({
-                            at: nowIso,
-                            action: '상태변경',
-                            detail: statusChangeDetail,
-                            actor: name
-                        })
-                    );
-                    return { ...item, ...updates };
-                });
-                persistLocalSubmissions(next);
-                return { ok: true };
+                    return { ok: true };
+                } catch (error) {
+                    console.error('상태 업데이트 실패:', error);
+                    alert('상태 변경 중 오류가 발생했습니다.');
+                    return { ok: false, error };
+                }
             };
 
-            const deleteSubmissions = (ids) => {
+            const deleteSubmissions = async (ids) => {
                 if (!ids || ids.length === 0) return;
                 const idSet = new Set(ids);
                 const next = getAllSubmissions().filter(item => !idSet.has(item.id));
-                persistLocalSubmissions(next);
+                try {
+                    if (isCloudSyncEnabled) {
+                        await deleteSubmissionsFromCloud(Array.from(idSet));
+                        applySubmissionList(next);
+                    } else {
+                        persistLocalSubmissions(next);
+                    }
+                } catch (error) {
+                    console.error('삭제 실패:', error);
+                    alert('삭제 중 오류가 발생했습니다.');
+                }
             };
 
             const renderView = () => {
@@ -1044,20 +1243,20 @@
                 }
                 switch (currentView) {
                     case 'home': return <HomeScreen onNavigate={handleHomeNavigate} adminRole={adminRole} onOpenAdmin={() => setShowAdminLogin(true)} />;
-                    case 'construction': return <ConstructionForm onBack={() => setCurrentView('home')} userRole={adminRole} onSubmit={(data) => {
+                    case 'construction': return <ConstructionForm onBack={() => setCurrentView('home')} userRole={adminRole} onSubmit={async (data) => {
                         const check = checkTimeOverlap(data, 'construction');
                         if (check.isOverlap) { alert(`[중복] 차량 ${check.car}는 이미 등록되어 있습니다.`); return { ok: false }; }
-                        return handleSave('construction', data, false);
+                        return await handleSave('construction', data, false);
                     }} />;
-                    case 'regular': return <RegularTicketForm onBack={() => setCurrentView('home')} userRole={adminRole} onSubmit={(data) => {
+                    case 'regular': return <RegularTicketForm onBack={() => setCurrentView('home')} userRole={adminRole} onSubmit={async (data) => {
                         if (data.applicationType !== 'change') {
                             const check = checkTimeOverlap({...data, startDate: new Date().toISOString().split('T')[0], endDate: '2099-12-31'}, 'regular');
                             if (check.isOverlap) { alert(`[중복] 차량 ${check.car}는 이미 등록되어 있습니다.`); return { ok: false }; }
                         }
-                        return handleSave('regular', data, false);
+                        return await handleSave('regular', data, false);
                     }} />;
-                    case 'edit_construction': return <ConstructionForm onBack={() => setCurrentView('statusCheck')} userRole={adminRole} initialData={editingItem} onSubmit={(data) => handleSave('construction', data, true, editingItem.id)} />;
-                    case 'edit_regular': return <RegularTicketForm onBack={() => setCurrentView('statusCheck')} userRole={adminRole} initialData={editingItem} onSubmit={(data) => handleSave('regular', data, true, editingItem.id)} />;
+                    case 'edit_construction': return <ConstructionForm onBack={() => setCurrentView('statusCheck')} userRole={adminRole} initialData={editingItem} onSubmit={async (data) => await handleSave('construction', data, true, editingItem.id)} />;
+                    case 'edit_regular': return <RegularTicketForm onBack={() => setCurrentView('statusCheck')} userRole={adminRole} initialData={editingItem} onSubmit={async (data) => await handleSave('regular', data, true, editingItem.id)} />;
                     case 'statusCheck': return <StatusCheckScreen onBack={() => setCurrentView('home')} submissions={submissions} onEdit={(item)=>{ setEditingItem(item); setCurrentView(item.type==='construction'?'edit_construction':'edit_regular'); }} />;
                     case 'admin': return <AdminDashboard onBack={() => setCurrentView('home')} submissions={submissions} onUpdateStatus={updateStatus} onDeleteSubmissions={deleteSubmissions} adminRole={adminRole} />;
                     case 'success': return <SuccessScreen type={lastSubmissionType} onHome={() => setCurrentView('home')} />;
@@ -1756,12 +1955,12 @@
                 }
             };
 
-            const handleDeleteSelected = () => {
+            const handleDeleteSelected = async () => {
                 if (adminRole !== 'MASTER') return;
                 if (selectedIds.size === 0) { alert("삭제할 항목을 선택해주세요."); return; }
                 const ok = window.confirm(`정말 지우시겠습니까?\n선택된 ${selectedIds.size}건이 삭제됩니다.`);
                 if (!ok) return;
-                onDeleteSubmissions(Array.from(selectedIds));
+                await onDeleteSubmissions(Array.from(selectedIds));
                 setSelectedIds(new Set());
                 setExpandedId(null);
             };
@@ -1772,16 +1971,18 @@
                 setFirstCheckerSignature(null);
             };
 
-            const handleFirstCheckConfirm = () => {
+            const handleFirstCheckConfirm = async () => {
                 if (!checkingItem) return;
                 if (!firstCheckerName.trim()) { alert('담당자 이름을 입력해주세요.'); return; }
                 if (!firstCheckerSignature) { alert('담당자 서명을 등록해주세요.'); return; }
-                onUpdateStatus(checkingItem.id, 'checked', null, {
+                const result = await onUpdateStatus(checkingItem.id, 'checked', null, {
                     managerName: firstCheckerName.trim(),
                     managerRole: adminRole,
                     managerSignature: firstCheckerSignature
                 });
-                closeFirstCheckModal();
+                if (result?.ok) {
+                    closeFirstCheckModal();
+                }
             };
 
             const InfoRow = ({ label, value, highlight }) => (
@@ -1816,7 +2017,7 @@
                             <input className="w-full border border-slate-300 rounded-lg p-2.5 text-sm mb-2" placeholder="반려 사유 입력" value={rejectReason} onChange={e=>setRejectReason(e.target.value)} autoFocus/>
                             <div className="flex gap-2">
                                 <button onClick={()=>setRejectingId(null)} className="flex-1 py-2.5 rounded-lg border border-slate-300 text-slate-600 font-bold text-sm">취소</button>
-                                <button onClick={()=> { onUpdateStatus(item.id, 'rejected', rejectReason); setRejectingId(null); }} className="flex-1 py-2.5 rounded-lg bg-rose-500 text-white font-bold text-sm shadow-md">확인</button>
+                                <button onClick={async ()=> { const result = await onUpdateStatus(item.id, 'rejected', rejectReason); if (result?.ok) setRejectingId(null); }} className="flex-1 py-2.5 rounded-lg bg-rose-500 text-white font-bold text-sm shadow-md">확인</button>
                             </div>
                         </div>
                     );
@@ -2353,9 +2554,9 @@
                     } 
                 } 
             }, [visitPurpose, formData.startDate, formData.startTime]);
-            const handleFormSubmit = (e) => {
+            const handleFormSubmit = async (e) => {
                 e.preventDefault();
-                onSubmit({ ...formData, visitPurpose });
+                await onSubmit({ ...formData, visitPurpose });
             };
 
             return (
@@ -2529,9 +2730,9 @@
                 };
                 reader.readAsDataURL(file);
             };
-            const handleFormSubmit = (e) => {
+            const handleFormSubmit = async (e) => {
                 e.preventDefault();
-                onSubmit({ ...formData, applicationType: appType });
+                await onSubmit({ ...formData, applicationType: appType });
             };
 
             return (
