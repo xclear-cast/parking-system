@@ -257,6 +257,7 @@
             const canvasRef = useRef(null);
             const [isDrawing, setIsDrawing] = useState(false);
             const [hasSignature, setHasSignature] = useState(!!initialData);
+            const [isPadUnlocked, setIsPadUnlocked] = useState(false);
             const signatureDataRef = useRef(initialData || null);
 
             const drawSignatureImage = (dataUrl) => {
@@ -293,6 +294,8 @@
             useEffect(() => {
                 signatureDataRef.current = initialData || null;
                 setHasSignature(!!initialData);
+                setIsPadUnlocked(false);
+                setIsDrawing(false);
                 syncCanvasSize();
                 const rafId = requestAnimationFrame(syncCanvasSize);
                 window.addEventListener('resize', syncCanvasSize);
@@ -314,6 +317,7 @@
             };
 
             const startDrawing = (e) => {
+                if (!isPadUnlocked) return;
                 syncCanvasSize();
                 e.preventDefault(); setIsDrawing(true);
                 const { x, y } = getPos(e);
@@ -322,7 +326,7 @@
             };
 
             const draw = (e) => {
-                if (!isDrawing) return;
+                if (!isPadUnlocked || !isDrawing) return;
                 e.preventDefault();
                 const { x, y } = getPos(e);
                 const ctx = canvasRef.current.getContext('2d');
@@ -344,16 +348,93 @@
                 canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
                 signatureDataRef.current = null;
                 setHasSignature(false);
+                setIsPadUnlocked(false);
+                setIsDrawing(false);
                 onSave(null);
             };
 
+            const unlockPad = () => {
+                setIsPadUnlocked(true);
+            };
+
+            const lockPad = () => {
+                setIsPadUnlocked(false);
+                setIsDrawing(false);
+            };
+
             return (
-                <div className="flex flex-col gap-2">
-                    <div className="relative border border-slate-300 rounded-xl bg-white overflow-hidden touch-none" style={{ height: '150px' }}>
-                        <canvas ref={canvasRef} className="w-full h-full cursor-crosshair" onMouseDown={startDrawing} onMouseMove={draw} onMouseUp={endDrawing} onMouseLeave={endDrawing} onTouchStart={startDrawing} onTouchMove={draw} onTouchEnd={endDrawing}/>
-                        {!hasSignature && <div className="absolute inset-0 flex items-center justify-center pointer-events-none text-slate-300 select-none">서명해 주세요</div>}
+                <div className="flex flex-col gap-3">
+                    <div className="flex items-center justify-between">
+                        <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold ${
+                            isPadUnlocked
+                                ? 'bg-emerald-100 text-emerald-700'
+                                : hasSignature
+                                    ? 'bg-indigo-100 text-indigo-700'
+                                    : 'bg-slate-100 text-slate-600'
+                        }`}>
+                            {isPadUnlocked ? '서명 모드 켜짐' : (hasSignature ? '서명 저장됨' : '서명 대기중')}
+                        </span>
+                        {!isPadUnlocked && <span className="text-[11px] font-medium text-slate-400">스크롤 가능</span>}
                     </div>
-                    <button type="button" onClick={clear} className="text-xs text-slate-500 underline self-end hover:text-rose-500">서명 지우기</button>
+                    <div
+                        className={`relative border rounded-xl bg-white overflow-hidden ${isPadUnlocked ? 'border-emerald-300' : 'border-slate-300'}`}
+                        style={{ height: '170px', touchAction: isPadUnlocked ? 'none' : 'pan-y' }}
+                    >
+                        <canvas
+                            ref={canvasRef}
+                            className={`w-full h-full ${isPadUnlocked ? 'cursor-crosshair' : 'cursor-default pointer-events-none'}`}
+                            onMouseDown={startDrawing}
+                            onMouseMove={draw}
+                            onMouseUp={endDrawing}
+                            onMouseLeave={endDrawing}
+                            onTouchStart={startDrawing}
+                            onTouchMove={draw}
+                            onTouchEnd={endDrawing}
+                        />
+                        {!hasSignature && (
+                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none text-slate-400 select-none text-base font-semibold text-center leading-snug px-4 whitespace-pre-line">
+                                {isPadUnlocked ? '손가락으로 박스 안에\n서명하세요' : '아래 [서명 시작] 버튼을\n먼저 눌러주세요'}
+                            </div>
+                        )}
+                    </div>
+                    {isPadUnlocked ? (
+                        <div className="grid grid-cols-2 gap-2.5">
+                            <button
+                                type="button"
+                                onClick={lockPad}
+                                className="h-12 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-base font-bold transition active:scale-[0.99]"
+                            >
+                                서명 완료
+                            </button>
+                            <button
+                                type="button"
+                                onClick={clear}
+                                className="h-12 rounded-xl border border-rose-300 bg-white text-rose-600 text-base font-bold hover:bg-rose-50 transition active:scale-[0.99]"
+                            >
+                                다시 쓰기
+                            </button>
+                        </div>
+                    ) : (
+                        <div className="space-y-2">
+                            <button
+                                type="button"
+                                onClick={unlockPad}
+                                className="w-full h-14 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-lg font-extrabold shadow-sm transition active:scale-[0.99] flex items-center justify-center gap-2"
+                            >
+                                <PenTool size={20} />
+                                <span>서명 시작</span>
+                            </button>
+                            {hasSignature && (
+                                <button
+                                    type="button"
+                                    onClick={clear}
+                                    className="w-full h-11 rounded-xl border border-slate-300 bg-white text-slate-600 text-sm font-bold hover:bg-slate-50 transition active:scale-[0.99]"
+                                >
+                                    서명 다시 쓰기
+                                </button>
+                            )}
+                        </div>
+                    )}
                 </div>
             );
         };
@@ -773,14 +854,12 @@
                     if (!hasText(data.department)) missing.push('department');
                     if (!hasPhone(data.phone)) missing.push('phone');
                     if (!hasCar(data.carNumber)) missing.push('carNumber');
+                    if (data.applicationType === 'change' && !hasCar(data.oldCarNumber)) missing.push('oldCarNumber');
+                    if (data.applicationType === 'change' && !hasText(data.changeReason)) missing.push('changeReason');
                     if (!hasText(data.unitNumber)) missing.push('unitNumber');
                     if (data.receptionType === 'proxy' && !hasText(data.proxySubmitterName)) missing.push('proxySubmitterName');
                     if (!hasText(data.signature)) missing.push(data.receptionType === 'proxy' ? 'proxySignature' : 'signature');
                     if (!hasText(data.registrationImg)) missing.push('registrationImg');
-                    if (data.applicationType === 'change') {
-                        if (!hasCar(data.oldCarNumber)) missing.push('oldCarNumber');
-                        if (!hasText(data.changeReason)) missing.push('changeReason');
-                    }
                 }
 
                 return missing;
@@ -2247,8 +2326,11 @@
             }, [userRole]);
             const receptionRoleName = userRole ? getRoleNameById(userRole) : '';
             const [visitPurpose, setVisitPurpose] = useState(allowedPurposes[0]);
-            const today = new Date().toISOString().split('T')[0];
-            const [formData, setFormData] = useState({ companyName:'', visitorName:'', visitUnit:'', location:'', driverPhone:'', startDate: today, endDate: today, startTime:'09:00', endTime:'18:00', vehicles:[''], signature: null, proxySubmitterName: '' });
+            const createEmptyConstructionForm = () => {
+                const today = new Date().toISOString().split('T')[0];
+                return { companyName:'', visitorName:'', visitUnit:'', location:'', driverPhone:'', startDate: today, endDate: today, startTime:'09:00', endTime:'18:00', vehicles:[''], signature: null, proxySubmitterName: '' };
+            };
+            const [formData, setFormData] = useState(() => createEmptyConstructionForm());
             
             useEffect(() => { 
                 if(initialData) { 
@@ -2256,6 +2338,7 @@
                     setFormData({...initialData}); 
                 } else {
                     setVisitPurpose(allowedPurposes[0]);
+                    setFormData(createEmptyConstructionForm());
                 }
             }, [initialData, allowedPurposes]);
 
@@ -2281,7 +2364,7 @@
                         <button onClick={onBack} className="p-2 -ml-2 rounded-full hover:bg-slate-50"><ArrowLeft className="text-slate-600"/></button>
                         <h2 className="text-xl font-bold text-slate-800">공사/방문 등록</h2>
                     </div>
-                    <form onSubmit={handleFormSubmit} className="flex flex-col flex-1 overflow-hidden">
+                    <form onSubmit={handleFormSubmit} autoComplete="off" className="flex flex-col flex-1 overflow-hidden">
                         <div className="flex-1 overflow-y-auto p-5">
                             {userRole && (
                                 <div className="mb-4 p-3 rounded-xl border border-amber-200 bg-amber-50">
@@ -2304,15 +2387,53 @@
                                 <FormInput label="연락처" type="tel" required requiredMark value={formData.driverPhone} onChange={e=>setFormData({...formData, driverPhone:e.target.value.replace(/[^0-9]/g,'')})} placeholder="01012345678"/>
                             </div>
                             
-                            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 mb-6">
+                            <div className="mt-4 p-4 bg-slate-50 rounded-2xl border border-slate-100 mb-6">
                                 <h3 className="text-sm font-bold text-slate-700 mb-3">방문 일시</h3>
-                                <div className="grid grid-cols-2 gap-3 mb-3">
-                                    <div><label className="text-xs text-slate-400 mb-1 block">시작일</label><input type="date" required className="w-full p-2.5 border rounded-xl text-sm bg-white font-medium" value={formData.startDate} onChange={e=>{const v=e.target.value; setFormData(p=>({...p, startDate:v, endDate: visitPurpose==='부동산'?v:p.endDate}))}}/></div>
-                                    <div><label className="text-xs text-slate-400 mb-1 block">시작 시간</label><input type="time" required className="w-full p-2.5 border rounded-xl text-sm bg-white font-medium" value={formData.startTime} onChange={e=>setFormData({...formData, startTime:e.target.value})}/></div>
+                                <div className="grid grid-cols-2 gap-2.5 mb-3">
+                                    <div className="min-w-0">
+                                        <label className="text-xs text-slate-400 mb-1 block">시작일</label>
+                                        <input
+                                            type="date"
+                                            required
+                                            className="w-full min-w-0 px-2.5 py-2.5 pr-8 border rounded-xl text-[13px] sm:text-sm bg-white font-medium"
+                                            value={formData.startDate}
+                                            onChange={e=>{const v=e.target.value; setFormData(p=>({...p, startDate:v, endDate: visitPurpose==='부동산'?v:p.endDate}))}}
+                                        />
+                                    </div>
+                                    <div className="min-w-0">
+                                        <label className="text-xs text-slate-400 mb-1 block">시작 시간</label>
+                                        <input
+                                            type="time"
+                                            required
+                                            className="w-full min-w-0 px-2.5 py-2.5 pr-8 border rounded-xl text-[13px] sm:text-sm bg-white font-medium"
+                                            value={formData.startTime}
+                                            onChange={e=>setFormData({...formData, startTime:e.target.value})}
+                                        />
+                                    </div>
                                 </div>
-                                <div className="grid grid-cols-2 gap-3">
-                                    <div><label className="text-xs text-slate-400 mb-1 block">종료일</label><input type="date" required className="w-full p-2.5 border rounded-xl text-sm bg-white font-medium disabled:bg-slate-100" value={formData.endDate} onChange={e=>setFormData({...formData, endDate:e.target.value})} disabled={visitPurpose==='부동산'}/></div>
-                                    <div><label className="text-xs text-slate-400 mb-1 block">종료 시간</label><input type="time" required className="w-full p-2.5 border rounded-xl text-sm bg-white font-medium disabled:bg-slate-100" value={formData.endTime} onChange={e=>setFormData({...formData, endTime:e.target.value})} disabled={visitPurpose==='부동산'}/></div>
+                                <div className="grid grid-cols-2 gap-2.5">
+                                    <div className="min-w-0">
+                                        <label className="text-xs text-slate-400 mb-1 block">종료일</label>
+                                        <input
+                                            type="date"
+                                            required
+                                            className="w-full min-w-0 px-2.5 py-2.5 pr-8 border rounded-xl text-[13px] sm:text-sm bg-white font-medium disabled:bg-slate-100"
+                                            value={formData.endDate}
+                                            onChange={e=>setFormData({...formData, endDate:e.target.value})}
+                                            disabled={visitPurpose==='부동산'}
+                                        />
+                                    </div>
+                                    <div className="min-w-0">
+                                        <label className="text-xs text-slate-400 mb-1 block">종료 시간</label>
+                                        <input
+                                            type="time"
+                                            required
+                                            className="w-full min-w-0 px-2.5 py-2.5 pr-8 border rounded-xl text-[13px] sm:text-sm bg-white font-medium disabled:bg-slate-100"
+                                            value={formData.endTime}
+                                            onChange={e=>setFormData({...formData, endTime:e.target.value})}
+                                            disabled={visitPurpose==='부동산'}
+                                        />
+                                    </div>
                                 </div>
                             </div>
 
@@ -2374,10 +2495,19 @@
         function RegularTicketForm({ onBack, onSubmit, initialData, userRole }) {
             const [appType, setAppType] = useState('new');
             const receptionRoleName = userRole ? getRoleNameById(userRole) : '';
-            const [formData, setFormData] = useState({ name:'', department:'', phone:'', carNumber:'', oldCarNumber:'', unitNumber:'', registrationImg:null, idCardImg:null, signature: null, changeReason: '', proxySubmitterName: '' });
+            const createEmptyRegularForm = () => ({ name:'', department:'', phone:'', carNumber:'', oldCarNumber:'', unitNumber:'', registrationImg:null, idCardImg:null, signature: null, changeReason: '', proxySubmitterName: '' });
+            const [formData, setFormData] = useState(() => createEmptyRegularForm());
             const regFileRef = useRef(null); const idFileRef = useRef(null);
             
-            useEffect(() => { if(initialData) { setAppType(initialData.applicationType); setFormData({...initialData}); } }, [initialData]);
+            useEffect(() => {
+                if(initialData) {
+                    setAppType(initialData.applicationType);
+                    setFormData({...initialData});
+                } else {
+                    setAppType('new');
+                    setFormData(createEmptyRegularForm());
+                }
+            }, [initialData]);
             
             const handleCompressedFile = (field, file) => {
                 if (!file) return;
@@ -2407,7 +2537,7 @@
             return (
                 <div className="flex flex-col h-full bg-white">
                     <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-3 shrink-0 bg-white z-10"><button onClick={onBack} className="p-2 -ml-2 rounded-full hover:bg-slate-50"><ArrowLeft className="text-slate-600"/></button><h2 className="text-xl font-bold text-slate-800">정기권 신청</h2></div>
-                    <form onSubmit={handleFormSubmit} className="flex flex-col flex-1 overflow-hidden">
+                    <form onSubmit={handleFormSubmit} autoComplete="off" className="flex flex-col flex-1 overflow-hidden">
                         <div className="flex-1 overflow-y-auto p-5">
                             {userRole && (
                                 <div className="mb-4 p-3 rounded-xl border border-amber-200 bg-amber-50">
@@ -2423,15 +2553,15 @@
                                 </div>
                             </div>
                             
-                            {appType==='change' && <div className="space-y-4 mb-6 p-4 bg-emerald-50 rounded-2xl border border-emerald-100"><FormInput label="기존 차량번호" required value={formData.oldCarNumber} onChange={e=>setFormData({...formData, oldCarNumber:sanitizeCarNumberInput(e.target.value)})} className="bg-white" placeholder="예: 12가3456" /><FormInput label="변경 사유" required value={formData.changeReason} onChange={e=>setFormData({...formData, changeReason:e.target.value})} placeholder="예: 차량 매매, 파손 등" className="bg-white" /></div>}
+                            {appType==='change' && <div className="space-y-4 mb-6 p-4 bg-emerald-50 rounded-2xl border border-emerald-100"><FormInput label="기존 차량번호" required requiredMark value={formData.oldCarNumber} onChange={e=>setFormData({...formData, oldCarNumber:sanitizeCarNumberInput(e.target.value)})} className="bg-white" placeholder="예: 12가3456" /><FormInput label="변경 사유" required requiredMark value={formData.changeReason} onChange={e=>setFormData({...formData, changeReason:e.target.value})} placeholder="예: 차량 매매, 파손 등" className="bg-white" /></div>}
                             
                             <div className="space-y-1">
-                                <FormInput label="성명" required value={formData.name} onChange={e=>setFormData({...formData, name:e.target.value})} placeholder="홍길동"/>
-                                <FormInput label="소속" required value={formData.department} onChange={e=>setFormData({...formData, department:e.target.value})} placeholder="예: 관리사무소"/>
-                                <FormInput label="연락처" type="tel" required value={formData.phone} onChange={e=>setFormData({...formData, phone:e.target.value.replace(/[^0-9]/g,'')})} placeholder="01012345678"/>
+                                <FormInput label="성명" required requiredMark value={formData.name} onChange={e=>setFormData({...formData, name:e.target.value})} placeholder="홍길동"/>
+                                <FormInput label="소속" required requiredMark value={formData.department} onChange={e=>setFormData({...formData, department:e.target.value})} placeholder="예: 관리사무소"/>
+                                <FormInput label="연락처" type="tel" required requiredMark value={formData.phone} onChange={e=>setFormData({...formData, phone:e.target.value.replace(/[^0-9]/g,'')})} placeholder="01012345678"/>
                                 <div className="grid grid-cols-2 gap-3">
-                                    <FormInput label={appType==='change'?'변경할 차량':'차량번호'} required value={formData.carNumber} onChange={e=>setFormData({...formData, carNumber:sanitizeCarNumberInput(e.target.value)})} className="bg-amber-50 border-amber-200 focus:ring-amber-500 focus:border-amber-500" placeholder="12가3456"/>
-                                    <FormInput label="호수" required value={formData.unitNumber} onChange={e=>setFormData({...formData, unitNumber:e.target.value.replace(/[^0-9]/g, '')})} placeholder="예: 101"/>
+                                    <FormInput label={appType==='change'?'변경할 차량':'차량번호'} required requiredMark value={formData.carNumber} onChange={e=>setFormData({...formData, carNumber:sanitizeCarNumberInput(e.target.value)})} className="bg-amber-50 border-amber-200 focus:ring-amber-500 focus:border-amber-500" placeholder="12가3456"/>
+                                    <FormInput label="호수" required requiredMark value={formData.unitNumber} onChange={e=>setFormData({...formData, unitNumber:e.target.value.replace(/[^0-9]/g, '')})} placeholder="예: 101"/>
                                 </div>
                             </div>
 
@@ -2439,7 +2569,10 @@
                                 <h3 className="text-sm font-bold text-slate-800">증빙 서류 첨부</h3>
                                 <div className="grid grid-cols-2 gap-4">
                                     <div className="bg-slate-50 p-3 rounded-2xl border border-slate-100 flex flex-col">
-                                        <div className="text-xs font-bold text-slate-500 mb-2 text-center">차량등록증</div>
+                                        <div className="text-xs font-bold text-slate-500 mb-2 flex items-center justify-center gap-1.5">
+                                            <span>차량등록증</span>
+                                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-600 font-extrabold">필수</span>
+                                        </div>
                                         {formData.registrationImg ? (
                                             <div className="relative group aspect-[4/3]"><img src={formData.registrationImg} className="w-full h-full object-cover rounded-xl border border-slate-200 shadow-sm"/><button type="button" onClick={()=>setFormData(p=>({...p, registrationImg:null}))} className="absolute top-1 right-1 bg-black/50 text-white p-1 rounded-full hover:bg-black/70"><X size={14}/></button></div>
                                         ) : (
@@ -2471,6 +2604,7 @@
                                         <FormInput
                                             label="대리 접수자명"
                                             required
+                                            requiredMark
                                             value={formData.proxySubmitterName || ''}
                                             onChange={e=>setFormData({...formData, proxySubmitterName:e.target.value})}
                                             placeholder="예: 홍길동"
