@@ -77,6 +77,7 @@
 </head>
 <body class="bg-gray-100 flex justify-center min-h-screen text-slate-800">
     <div id="root" class="w-full md:max-w-md min-h-[100dvh] md:h-[100dvh] bg-gray-50 shadow-2xl overflow-visible md:overflow-hidden flex flex-col relative"></div>
+    <script src="./assets/fonts/NanumGothic-Regular.base64.js"></script>
 
     <script type="text/babel" data-type="module">
         import React, { useState, useEffect, useRef, useMemo } from 'react';
@@ -90,13 +91,17 @@
         const FINAL_APPROVER_SIGNATURE_TEXT = '주차관제실';
         const OFFICIAL_FOOTER_TITLE = '강동 아이파크 더 리버몰 주차관제실';
         const OFFICIAL_FOOTER_SUBTITLE = '본 문서는 주차관제실 전자승인 문서입니다.';
-        const PDF_FONT_URLS = [
-            'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/nanumgothic/NanumGothic-Regular.ttf',
-            'https://raw.githubusercontent.com/googlefonts/nanumgothic/master/fonts/ttf/NanumGothic-Regular.ttf'
-        ];
+        const PDF_FONT_BASE64_GLOBAL_KEY = '__NANUM_GOTHIC_REGULAR_BASE64__';
+        const PDF_FONT_BASE64_PATH = './assets/fonts/NanumGothic-Regular.base64.txt';
+        const PDF_FONT_FILE_NAME = 'NanumGothic-Regular.ttf';
+        const PDF_FONT_FAMILY_NAME = 'NanumGothic';
         // 동기화 백엔드: 클라우드 전용
         const DATA_SYNC_PROVIDER = 'firebase'; // 'firebase' | 'custom'
+        const ASSET_STORAGE_PROVIDER = DATA_SYNC_PROVIDER; // 'firebase' | 'custom'
         const DATA_SYNC_COLLECTION = 'parking_submissions_v1';
+        const ASSET_STORAGE_BASE_PATH = 'parking_assets_v1';
+        const ENABLE_LOCAL_DEV_FALLBACK = true;
+        const LOCAL_DEV_DATA_KEY = `${DATA_SYNC_COLLECTION}_local_dev`;
         const DATA_SYNC_CONFIG = {
             firebase: {
                 // TODO: Firebase 콘솔 > 프로젝트 설정 > 웹 앱 구성값으로 채우세요.
@@ -110,21 +115,28 @@
             custom: {
                 // TODO: 업체 확정 시 createClient에 어댑터 팩토리를 연결하세요.
                 // createClient: async ({ collectionName, config, allConfig }) => ({ subscribe, upsert, removeMany })
-                createClient: null
+                createClient: null,
+                // createAssetClient: async ({ basePath, config, allConfig }) => ({ uploadDataUrl, deleteByPath? })
+                createAssetClient: null
             }
         };
         const hasFirebaseConfig = (config) =>
             Boolean(config?.apiKey && config?.projectId && config?.appId);
-        const createFirebaseSyncClient = async () => {
+        const getFirebaseAppInstance = async () => {
             const firebaseConfig = DATA_SYNC_CONFIG.firebase || {};
             if (!hasFirebaseConfig(firebaseConfig)) {
                 throw new Error('FIREBASE_CONFIG_MISSING');
             }
-            const [{ initializeApp }, firestore] = await Promise.all([
-                import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js'),
+            const { initializeApp, getApps, getApp } = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js');
+            const apps = getApps();
+            if (apps.length > 0) return getApp();
+            return initializeApp(firebaseConfig);
+        };
+        const createFirebaseSyncClient = async () => {
+            const [app, firestore] = await Promise.all([
+                getFirebaseAppInstance(),
                 import('https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js')
             ]);
-            const app = initializeApp(firebaseConfig);
             const db = firestore.getFirestore(app);
             const submissionsCol = firestore.collection(db, DATA_SYNC_COLLECTION);
 
@@ -163,6 +175,35 @@
                 }
             };
         };
+        const createFirebaseAssetStorageClient = async () => {
+            const [app, storageModule] = await Promise.all([
+                getFirebaseAppInstance(),
+                import('https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js')
+            ]);
+            const storage = storageModule.getStorage(app);
+            return {
+                provider: 'firebase-storage',
+                uploadDataUrl: async ({ dataUrl, objectKey }) => {
+                    if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) {
+                        throw new Error('INVALID_ASSET_DATA_URL');
+                    }
+                    const safeObjectKey = `${objectKey || Date.now()}`
+                        .replace(/[^a-zA-Z0-9/_-]/g, '_')
+                        .replace(/^\/+/, '');
+                    const fullPath = `${ASSET_STORAGE_BASE_PATH}/${safeObjectKey}`;
+                    const storageRef = storageModule.ref(storage, fullPath);
+                    await storageModule.uploadString(storageRef, dataUrl, 'data_url');
+                    const url = await storageModule.getDownloadURL(storageRef);
+                    return { url, path: fullPath, provider: 'firebase-storage' };
+                },
+                deleteByPath: async (path) => {
+                    if (!path) return;
+                    try {
+                        await storageModule.deleteObject(storageModule.ref(storage, path));
+                    } catch {}
+                }
+            };
+        };
         const createCustomSyncClient = async () => {
             const customConfig = DATA_SYNC_CONFIG.custom || {};
             if (typeof customConfig.createClient !== 'function') {
@@ -184,9 +225,32 @@
             }
             return { ...client, provider: client.provider || 'custom' };
         };
+        const createCustomAssetStorageClient = async () => {
+            const customConfig = DATA_SYNC_CONFIG.custom || {};
+            if (typeof customConfig.createAssetClient !== 'function') {
+                throw new Error('CUSTOM_ASSET_FACTORY_MISSING');
+            }
+            const client = await customConfig.createAssetClient({
+                basePath: ASSET_STORAGE_BASE_PATH,
+                config: customConfig,
+                allConfig: DATA_SYNC_CONFIG
+            });
+            const isValidClient = Boolean(
+                client &&
+                typeof client.uploadDataUrl === 'function'
+            );
+            if (!isValidClient) {
+                throw new Error('CUSTOM_ASSET_INVALID_CLIENT');
+            }
+            return { ...client, provider: client.provider || 'custom-asset' };
+        };
         const CLOUD_SYNC_PROVIDER_FACTORIES = {
             firebase: createFirebaseSyncClient,
             custom: createCustomSyncClient
+        };
+        const ASSET_STORAGE_PROVIDER_FACTORIES = {
+            firebase: createFirebaseAssetStorageClient,
+            custom: createCustomAssetStorageClient
         };
         const createCloudSyncClient = async () => {
             const factory = CLOUD_SYNC_PROVIDER_FACTORIES[DATA_SYNC_PROVIDER];
@@ -195,6 +259,78 @@
             }
             return await factory();
         };
+        const createAssetStorageClient = async () => {
+            const factory = ASSET_STORAGE_PROVIDER_FACTORIES[ASSET_STORAGE_PROVIDER];
+            if (typeof factory !== 'function') {
+                throw new Error(`UNSUPPORTED_ASSET_PROVIDER:${ASSET_STORAGE_PROVIDER}`);
+            }
+            return await factory();
+        };
+        const sortBySubmittedAtDesc = (list) =>
+            [...(Array.isArray(list) ? list : [])]
+                .sort((a, b) => new Date(b?.submittedAt || 0) - new Date(a?.submittedAt || 0));
+        const localDevSubscribers = new Set();
+        let localDevMemoryStore = [];
+        const readLocalDevSubmissions = () => {
+            try {
+                const raw = localStorage.getItem(LOCAL_DEV_DATA_KEY);
+                if (!raw) return [...localDevMemoryStore];
+                const parsed = JSON.parse(raw);
+                if (!Array.isArray(parsed)) return [...localDevMemoryStore];
+                localDevMemoryStore = [...parsed];
+                return [...localDevMemoryStore];
+            } catch {
+                return [...localDevMemoryStore];
+            }
+        };
+        const writeLocalDevSubmissions = (list) => {
+            const next = Array.isArray(list) ? [...list] : [];
+            localDevMemoryStore = next;
+            try {
+                localStorage.setItem(LOCAL_DEV_DATA_KEY, JSON.stringify(next));
+            } catch {}
+        };
+        const emitLocalDevSubmissions = () => {
+            const snapshot = sortBySubmittedAtDesc(readLocalDevSubmissions());
+            localDevSubscribers.forEach((fn) => {
+                try { fn(snapshot); } catch {}
+            });
+        };
+        const createLocalDevSyncClient = () => ({
+            provider: 'local-dev',
+            subscribe: (onData) => {
+                if (typeof onData !== 'function') return () => {};
+                localDevSubscribers.add(onData);
+                onData(sortBySubmittedAtDesc(readLocalDevSubmissions()));
+                return () => localDevSubscribers.delete(onData);
+            },
+            upsert: async (item) => {
+                if (!item?.id) return;
+                const current = readLocalDevSubmissions();
+                const idx = current.findIndex((row) => row.id === item.id);
+                if (idx >= 0) current[idx] = { ...item, id: item.id };
+                else current.push({ ...item, id: item.id });
+                writeLocalDevSubmissions(current);
+                emitLocalDevSubmissions();
+            },
+            removeMany: async (ids) => {
+                const idSet = new Set(Array.isArray(ids) ? ids.filter(Boolean) : []);
+                if (idSet.size === 0) return;
+                const next = readLocalDevSubmissions().filter((row) => !idSet.has(row.id));
+                writeLocalDevSubmissions(next);
+                emitLocalDevSubmissions();
+            }
+        });
+        const createLocalDevAssetStorageClient = () => ({
+            provider: 'local-dev-asset',
+            uploadDataUrl: async ({ dataUrl }) => {
+                if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) {
+                    throw new Error('INVALID_ASSET_DATA_URL');
+                }
+                return { url: dataUrl, path: null, provider: 'local-dev-asset' };
+            },
+            deleteByPath: async () => {}
+        });
         
         // --- 권한 및 상태 정의 ---
         const ROLES = {
@@ -260,6 +396,13 @@
             return `${hour}:${minute}`;
         };
         const maxTimeString = (a = '00:00', b = '00:00') => (a > b ? a : b);
+        const REGULAR_ASSET_FIELDS = ['registrationImg', 'idCardImg'];
+        const isImageDataUrl = (value) =>
+            typeof value === 'string' && value.startsWith('data:image/');
+        const isLikelyRemoteAssetUrl = (value) =>
+            typeof value === 'string' && /^https?:\/\//i.test(value);
+        const toAssetObjectKey = (docId, field) =>
+            `${DATA_SYNC_COLLECTION}/${docId}/${field}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
 
         const sanitizeCarNumberInput = (value) =>
             (value || '')
@@ -544,11 +687,14 @@
             const [notifications, setNotifications] = useState([]);
             const [showNotificationCenter, setShowNotificationCenter] = useState(false);
             const [cloudSyncClient, setCloudSyncClient] = useState(null);
+            const [assetStorageClient, setAssetStorageClient] = useState(null);
             const [isSyncBackendReady, setIsSyncBackendReady] = useState(false);
             const [syncErrorMessage, setSyncErrorMessage] = useState('');
+            const [isLocalDevFallback, setIsLocalDevFallback] = useState(false);
             const previousSubmissionListRef = useRef([]);
             const hasInitialSubmissionSyncRef = useRef(false);
             const isCloudSyncEnabled = Boolean(cloudSyncClient);
+            const isAssetStorageEnabled = Boolean(assetStorageClient);
 
             const isValidRoleId = (roleId) => Object.values(ROLES).some((role) => role.id === roleId);
             const saveAdminSession = (roleId, loggedInAt = new Date().toISOString()) => {
@@ -613,6 +759,13 @@
                 }
                 return true;
             };
+            const ensureAssetStorageAvailable = (actionLabel = '파일 업로드') => {
+                if (!isAssetStorageEnabled || !assetStorageClient) {
+                    alert(`파일 저장소 연결이 확인되지 않아 ${actionLabel}를 진행할 수 없습니다.`);
+                    return false;
+                }
+                return true;
+            };
             const saveSubmissionToCloud = async (item) => {
                 if (!cloudSyncClient || !item?.id) return;
                 await cloudSyncClient.upsert(item);
@@ -620,6 +773,48 @@
             const deleteSubmissionsFromCloud = async (ids) => {
                 if (!cloudSyncClient) return;
                 await cloudSyncClient.removeMany(ids);
+            };
+            const resolveRegularAssetFields = async ({ data, docId, baseItem = null }) => {
+                const next = { ...data };
+                for (const field of REGULAR_ASSET_FIELDS) {
+                    const currentValue = next[field];
+                    if (isImageDataUrl(currentValue)) {
+                        const uploadResult = await assetStorageClient.uploadDataUrl({
+                            dataUrl: currentValue,
+                            objectKey: toAssetObjectKey(docId, field)
+                        });
+                        const oldPath = baseItem ? baseItem[`${field}StoragePath`] : null;
+                        if (oldPath && typeof assetStorageClient.deleteByPath === 'function') {
+                            if (oldPath !== uploadResult?.path) {
+                                assetStorageClient.deleteByPath(oldPath).catch(() => {});
+                            }
+                        }
+                        next[field] = uploadResult?.url || null;
+                        next[`${field}StoragePath`] = uploadResult?.path || null;
+                        next[`${field}StorageProvider`] = uploadResult?.provider || null;
+                        continue;
+                    }
+
+                    if (isLikelyRemoteAssetUrl(currentValue)) {
+                        if (baseItem && baseItem[field] === currentValue) {
+                            next[`${field}StoragePath`] = baseItem[`${field}StoragePath`] || null;
+                            next[`${field}StorageProvider`] = baseItem[`${field}StorageProvider`] || null;
+                        } else {
+                            next[`${field}StoragePath`] = next[`${field}StoragePath`] || null;
+                            next[`${field}StorageProvider`] = next[`${field}StorageProvider`] || null;
+                        }
+                        continue;
+                    }
+
+                    const oldPath = baseItem ? baseItem[`${field}StoragePath`] : null;
+                    if (oldPath && typeof assetStorageClient.deleteByPath === 'function') {
+                        assetStorageClient.deleteByPath(oldPath).catch(() => {});
+                    }
+                    next[field] = null;
+                    next[`${field}StoragePath`] = null;
+                    next[`${field}StorageProvider`] = null;
+                }
+                return next;
             };
 
             const getAllSubmissions = () => toSubmissionList(submissions);
@@ -677,13 +872,16 @@
                 let isMounted = true;
                 setSyncErrorMessage('');
                 setIsSyncBackendReady(false);
-                createCloudSyncClient()
-                    .then((client) => {
+                setIsLocalDevFallback(false);
+                Promise.all([createCloudSyncClient(), createAssetStorageClient()])
+                    .then(([cloudClient, assetClient]) => {
                         if (!isMounted) return;
-                        if (!client) {
+                        if (!cloudClient || !assetClient) {
                             throw new Error('CLOUD_CLIENT_UNAVAILABLE');
                         }
-                        setCloudSyncClient(client);
+                        setCloudSyncClient(cloudClient);
+                        setAssetStorageClient(assetClient);
+                        setIsLocalDevFallback(false);
                         setSyncErrorMessage('');
                         setIsSyncBackendReady(true);
                     })
@@ -691,6 +889,7 @@
                         console.error('동기화 백엔드 초기화 실패:', error);
                         if (!isMounted) return;
                         setCloudSyncClient(null);
+                        setAssetStorageClient(null);
                         const errorMessage = error?.message || '';
                         if (errorMessage === 'FIREBASE_CONFIG_MISSING') {
                             setSyncErrorMessage('Firebase 설정값이 비어 있습니다.\n프로젝트 설정값 입력 후 새로고침하세요.');
@@ -698,11 +897,34 @@
                             setSyncErrorMessage('커스텀 provider 팩토리가 연결되지 않았습니다.\nDATA_SYNC_CONFIG.custom.createClient를 설정하세요.');
                         } else if (errorMessage === 'CUSTOM_PROVIDER_INVALID_CLIENT') {
                             setSyncErrorMessage('커스텀 provider 클라이언트 형식이 올바르지 않습니다.\nsubscribe/upsert/removeMany 함수를 확인하세요.');
+                        } else if (errorMessage === 'CUSTOM_ASSET_FACTORY_MISSING') {
+                            setSyncErrorMessage('커스텀 파일저장소 팩토리가 연결되지 않았습니다.\nDATA_SYNC_CONFIG.custom.createAssetClient를 설정하세요.');
+                        } else if (errorMessage === 'CUSTOM_ASSET_INVALID_CLIENT') {
+                            setSyncErrorMessage('커스텀 파일저장소 클라이언트 형식이 올바르지 않습니다.\nuploadDataUrl 함수를 확인하세요.');
                         } else if (errorMessage.startsWith('UNSUPPORTED_SYNC_PROVIDER:')) {
                             setSyncErrorMessage(`지원하지 않는 provider입니다.\n현재 설정: ${DATA_SYNC_PROVIDER}`);
+                        } else if (errorMessage.startsWith('UNSUPPORTED_ASSET_PROVIDER:')) {
+                            setSyncErrorMessage(`지원하지 않는 파일 provider입니다.\n현재 설정: ${ASSET_STORAGE_PROVIDER}`);
                         } else {
-                            setSyncErrorMessage(`클라우드 연결 초기화에 실패했습니다.\nprovider: ${DATA_SYNC_PROVIDER}\n설정 확인 후 새로고침하세요.`);
+                            setSyncErrorMessage(`클라우드 연결 초기화에 실패했습니다.\nprovider: ${DATA_SYNC_PROVIDER} / asset: ${ASSET_STORAGE_PROVIDER}\n설정 확인 후 새로고침하세요.`);
                         }
+
+                        const canFallbackToLocalDev = ENABLE_LOCAL_DEV_FALLBACK && (
+                            errorMessage === 'FIREBASE_CONFIG_MISSING' ||
+                            errorMessage === 'CUSTOM_PROVIDER_FACTORY_MISSING' ||
+                            errorMessage === 'CUSTOM_ASSET_FACTORY_MISSING' ||
+                            errorMessage.startsWith('UNSUPPORTED_SYNC_PROVIDER:') ||
+                            errorMessage.startsWith('UNSUPPORTED_ASSET_PROVIDER:')
+                        );
+                        if (canFallbackToLocalDev) {
+                            setCloudSyncClient(createLocalDevSyncClient());
+                            setAssetStorageClient(createLocalDevAssetStorageClient());
+                            setIsLocalDevFallback(true);
+                            setSyncErrorMessage('클라우드 설정이 비어 있어 로컬 개발 모드로 실행 중입니다.\n실운영 전 Firebase(또는 확정된 업체) 설정을 입력하세요.');
+                            setIsSyncBackendReady(true);
+                            return;
+                        }
+
                         setIsSyncBackendReady(true);
                     });
                 return () => { isMounted = false; };
@@ -951,6 +1173,9 @@
                 if (!ensureCloudSyncAvailable('저장')) {
                     return { ok: false, syncUnavailable: true };
                 }
+                if (type === 'regular' && !ensureAssetStorageAvailable('증빙 이미지 업로드')) {
+                    return { ok: false, assetUnavailable: true };
+                }
                 const all = getAllSubmissions();
                 const nowIso = new Date().toISOString();
                 const receptionMeta = getReceptionMeta();
@@ -983,11 +1208,39 @@
                         return { ok: false, invalidVisitTime: true };
                     }
                 }
+                let baseItem = null;
+                if (isEdit && docId) {
+                    baseItem = all.find(item => item.id === docId);
+                    if (!baseItem) {
+                        alert('수정할 데이터를 찾을 수 없습니다.');
+                        return { ok: false, notFound: true };
+                    }
+                }
+
+                const targetDocId = (isEdit && baseItem?.id)
+                    ? baseItem.id
+                    : `doc-${Date.now()}-${Math.random().toString(36).substr(2,5)}`;
+
+                let dataWithAssets = cleanData;
+                if (type === 'regular') {
+                    try {
+                        dataWithAssets = await resolveRegularAssetFields({
+                            data: cleanData,
+                            docId: targetDocId,
+                            baseItem
+                        });
+                    } catch (error) {
+                        console.error('증빙 이미지 업로드 실패:', error);
+                        alert('증빙 이미지 업로드 중 오류가 발생했습니다. 네트워크 상태를 확인해주세요.');
+                        return { ok: false, error, assetUploadFailed: true };
+                    }
+                }
+
                 const requestTypeLabel = type === 'construction' ? '공사/방문' : '정기권';
-                const receptionLabel = cleanData.receptionType === 'proxy'
-                    ? `대리접수 (${cleanData.receptionDesk || '관리자'}${cleanData.proxySubmitterName ? ` / ${cleanData.proxySubmitterName}` : ''})`
+                const receptionLabel = dataWithAssets.receptionType === 'proxy'
+                    ? `대리접수 (${dataWithAssets.receptionDesk || '관리자'}${dataWithAssets.proxySubmitterName ? ` / ${dataWithAssets.proxySubmitterName}` : ''})`
                     : '본인접수';
-                const isAutoCheckedRealEstate = type === 'construction' && cleanData.visitPurpose === '부동산';
+                const isAutoCheckedRealEstate = type === 'construction' && dataWithAssets.visitPurpose === '부동산';
                 const firstCheckDefaults = isAutoCheckedRealEstate ? {
                     status: 'checked',
                     checkedBy: '주차관제실',
@@ -1009,11 +1262,6 @@
                 let nextSubmissions = [];
                 let targetItem = null;
                 if (isEdit && docId) {
-                    const baseItem = all.find(item => item.id === docId);
-                    if (!baseItem) {
-                        alert('수정할 데이터를 찾을 수 없습니다.');
-                        return { ok: false, notFound: true };
-                    }
                     const actor = getCurrentActorName('신청자');
                     const logs = mergeActivityLogs(
                         baseItem,
@@ -1034,7 +1282,7 @@
                     );
                     targetItem = {
                         ...baseItem,
-                        ...cleanData,
+                        ...dataWithAssets,
                         ...firstCheckDefaults,
                         approvedBy: null,
                         approvedAt: null,
@@ -1066,11 +1314,11 @@
                         );
                     }
                     targetItem = {
-                        id: `doc-${Date.now()}-${Math.random().toString(36).substr(2,5)}`,
+                        id: targetDocId,
                         type,
                         ...firstCheckDefaults,
                         submittedAt: nowIso,
-                        ...cleanData,
+                        ...dataWithAssets,
                         activityLogs: mergeActivityLogs(null, ...initialLogEntries)
                     };
                     nextSubmissions = [targetItem, ...all];
@@ -1209,7 +1457,7 @@
                 );
             }
 
-            if (!isCloudSyncEnabled) {
+            if (!isCloudSyncEnabled || !isAssetStorageEnabled) {
                 return (
                     <div className="h-full w-full flex items-center justify-center px-6 bg-slate-50">
                         <div className="w-full max-w-sm rounded-2xl border border-rose-200 bg-white p-5 text-center shadow-sm">
@@ -1228,6 +1476,11 @@
 
             return (
                 <div className="flex flex-col h-full bg-slate-50 relative">
+                    {isLocalDevFallback && (
+                        <div className="px-4 py-2 bg-amber-50 border-b border-amber-200 text-[12px] font-semibold text-amber-700 text-center">
+                            로컬 개발 모드로 실행 중입니다. (Firebase 미설정)
+                        </div>
+                    )}
                     <header className="bg-slate-900 text-white px-4 sm:px-5 py-3 sm:py-4 shrink-0 z-10 shadow-lg safe-area-top">
                         <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-2.5 min-w-0">
@@ -1384,6 +1637,7 @@
             
             const [searchType, setSearchType] = useState('all'); 
             const [searchText, setSearchText] = useState(''); 
+            const [debouncedSearchText, setDebouncedSearchText] = useState('');
             const [expandedId, setExpandedId] = useState(null); 
             const [historyOpen, setHistoryOpen] = useState(false);
             const [historyList, setHistoryList] = useState([]);
@@ -1394,7 +1648,9 @@
             const [viewImage, setViewImage] = useState(null);
             const [viewImageTitle, setViewImageTitle] = useState('');
             const [selectedIds, setSelectedIds] = useState(new Set()); 
+            const [openLogItemId, setOpenLogItemId] = useState(null);
             const pdfFontBase64Ref = useRef(null);
+            const pdfImageDataUrlCacheRef = useRef(new Map());
             const [checkingItem, setCheckingItem] = useState(null);
             const [firstCheckerName, setFirstCheckerName] = useState('');
             const [firstCheckerSignature, setFirstCheckerSignature] = useState(null);
@@ -1421,50 +1677,81 @@
                 if (adminRole === 'MASTER') setActiveTab('construction');
             }, [adminRole]);
 
-            const list = submissions[activeTab] || [];
-            const filteredList = list.filter(item => {
-                const d = new Date(item.submittedAt);
-                if (d.getFullYear() !== parseInt(filterYear)) return false;
-                if ((d.getMonth()+1) !== parseInt(filterMonth)) return false;
-                if (filterDay!=='all' && d.getDate() !== parseInt(filterDay)) return false;
-                if (filterStatus!=='all' && item.status !== filterStatus) return false;
+            const list = useMemo(() => submissions[activeTab] || [], [submissions, activeTab]);
 
-                if (activeTab === 'construction') {
-                    if (adminRole === 'SAFETY' && !['공사', '기타'].includes(item.visitPurpose)) return false;
-                    if (adminRole === 'CENTER' && item.visitPurpose !== '기타') return false;
-                }
-                
-                if (searchText) {
-                    const term = searchText.toLowerCase();
+            useEffect(() => {
+                const timer = window.setTimeout(() => {
+                    setDebouncedSearchText(searchText);
+                }, 250);
+                return () => window.clearTimeout(timer);
+            }, [searchText]);
+
+            const filteredList = useMemo(() => {
+                const selectedYear = Number(filterYear);
+                const selectedMonth = Number(filterMonth);
+                const selectedDay = filterDay === 'all' ? null : Number(filterDay);
+                const term = debouncedSearchText.trim().toLowerCase();
+
+                return list.filter((item) => {
+                    const d = new Date(item.submittedAt);
+                    if (d.getFullYear() !== selectedYear) return false;
+                    if ((d.getMonth() + 1) !== selectedMonth) return false;
+                    if (selectedDay && d.getDate() !== selectedDay) return false;
+                    if (filterStatus !== 'all' && item.status !== filterStatus) return false;
+
+                    if (activeTab === 'construction') {
+                        if (adminRole === 'SAFETY' && !['공사', '기타'].includes(item.visitPurpose)) return false;
+                        if (adminRole === 'CENTER' && item.visitPurpose !== '기타') return false;
+                    }
+
+                    if (!term) return true;
+
                     const car = (item.carNumber || (item.vehicles ? item.vehicles.join(' ') : '')).toLowerCase();
                     const name = (item.name || item.companyName || '').toLowerCase();
                     const unit = (item.unitNumber || item.visitUnit || '').toLowerCase();
 
-                    if (searchType === 'all') {
-                        if (!car.includes(term) && !name.includes(term) && !unit.includes(term)) return false;
-                    } else if (searchType === 'name') {
-                        if (!name.includes(term)) return false;
-                    } else if (searchType === 'car') {
-                        if (!car.includes(term)) return false;
-                    } else if (searchType === 'unit') {
-                        if (!unit.includes(term)) return false;
-                    }
-                }
-                return true;
-            });
-
-            const getDuplicateInfo = (item) => {
-                if (activeTab !== 'construction') return { count: 0, history: [] };
-                const date = item.startDate;
-                let count = 0; let history = [];
-                list.forEach(other => {
-                    if (other.startDate === date) {
-                        const overlap = (item.vehicles||[]).some(v => (other.vehicles||[]).includes(v));
-                        if (overlap) { count++; history.push(other); }
-                    }
+                    if (searchType === 'name') return name.includes(term);
+                    if (searchType === 'car') return car.includes(term);
+                    if (searchType === 'unit') return unit.includes(term);
+                    return car.includes(term) || name.includes(term) || unit.includes(term);
                 });
-                return { count, history };
-            };
+            }, [list, filterYear, filterMonth, filterDay, filterStatus, activeTab, adminRole, searchType, debouncedSearchText]);
+
+            const duplicateInfoMap = useMemo(() => {
+                const map = new Map();
+                if (activeTab !== 'construction') return map;
+
+                const bucketMap = new Map();
+                list.forEach((item) => {
+                    const dateKey = `${item.startDate || ''}`;
+                    const vehicles = (item.vehicles || [])
+                        .map((v) => `${v || ''}`.trim())
+                        .filter(Boolean);
+                    vehicles.forEach((vehicle) => {
+                        const key = `${dateKey}__${vehicle}`;
+                        if (!bucketMap.has(key)) bucketMap.set(key, []);
+                        bucketMap.get(key).push(item);
+                    });
+                });
+
+                list.forEach((item) => {
+                    const dateKey = `${item.startDate || ''}`;
+                    const vehicles = (item.vehicles || [])
+                        .map((v) => `${v || ''}`.trim())
+                        .filter(Boolean);
+                    const historyMap = new Map();
+                    vehicles.forEach((vehicle) => {
+                        const key = `${dateKey}__${vehicle}`;
+                        const bucket = bucketMap.get(key) || [];
+                        bucket.forEach((entry) => historyMap.set(entry.id, entry));
+                    });
+                    map.set(item.id, { count: historyMap.size, history: Array.from(historyMap.values()) });
+                });
+
+                return map;
+            }, [activeTab, list]);
+
+            const getDuplicateInfo = (item) => duplicateInfoMap.get(item.id) || { count: 0, history: [] };
 
             const toggleSelectAll = () => {
                 if (filteredList.length === 0) return;
@@ -1473,6 +1760,7 @@
             };
             const toggleSelect = (id) => { const newSet = new Set(selectedIds); if (newSet.has(id)) { newSet.delete(id); } else { newSet.add(id); } setSelectedIds(newSet); };
             const getTargetList = () => selectedIds.size > 0 ? filteredList.filter(item => selectedIds.has(item.id)) : filteredList;
+            const toggleLogPanel = (itemId) => setOpenLogItemId((prev) => (prev === itemId ? null : itemId));
 
             useEffect(() => { if(!window.XLSX) { const s = document.createElement('script'); s.src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"; document.body.appendChild(s); } }, []);
 
@@ -1501,36 +1789,55 @@
                 return d.toLocaleString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
             };
 
-            const arrayBufferToBase64 = (buffer) => {
-                let binary = '';
-                const bytes = new Uint8Array(buffer);
-                const chunkSize = 0x8000;
-                for (let i = 0; i < bytes.length; i += chunkSize) {
-                    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+            const loadPdfFontBase64 = async () => {
+                const fromGlobal = typeof window !== 'undefined' ? window[PDF_FONT_BASE64_GLOBAL_KEY] : '';
+                if (typeof fromGlobal === 'string' && fromGlobal.length > 1024) {
+                    return fromGlobal.trim();
                 }
-                return btoa(binary);
+                const response = await fetch(PDF_FONT_BASE64_PATH, { cache: 'force-cache' });
+                if (!response.ok) throw new Error('font base64 fetch failed');
+                const fontBase64 = (await response.text()).trim();
+                if (!fontBase64 || fontBase64.length < 1024) throw new Error('font base64 invalid');
+                return fontBase64;
+            };
+            const blobToDataUrl = (blob) =>
+                new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result);
+                    reader.onerror = reject;
+                    reader.readAsDataURL(blob);
+                });
+            const toPdfImageDataUrl = async (source) => {
+                if (!source || typeof source !== 'string') return null;
+                if (source.startsWith('data:image/')) return source;
+                if (!/^https?:\/\//i.test(source)) return null;
+
+                const cached = pdfImageDataUrlCacheRef.current.get(source);
+                if (cached) return cached;
+
+                try {
+                    const res = await fetch(source);
+                    if (!res.ok) return null;
+                    const blob = await res.blob();
+                    const dataUrl = await blobToDataUrl(blob);
+                    if (typeof dataUrl === 'string' && dataUrl.startsWith('data:image/')) {
+                        pdfImageDataUrlCacheRef.current.set(source, dataUrl);
+                        return dataUrl;
+                    }
+                    return null;
+                } catch {
+                    return null;
+                }
             };
 
             const ensurePdfFont = async (pdf) => {
-                const fontFile = 'NanumGothic-Regular.ttf';
-                const fontName = 'NanumGothic';
                 try {
                     if (!pdfFontBase64Ref.current) {
-                        let loadedBuffer = null;
-                        for (const url of PDF_FONT_URLS) {
-                            try {
-                                const res = await fetch(url);
-                                if (!res.ok) continue;
-                                loadedBuffer = await res.arrayBuffer();
-                                break;
-                            } catch {}
-                        }
-                        if (!loadedBuffer) throw new Error('font fetch failed');
-                        pdfFontBase64Ref.current = arrayBufferToBase64(loadedBuffer);
+                        pdfFontBase64Ref.current = await loadPdfFontBase64();
                     }
-                    pdf.addFileToVFS(fontFile, pdfFontBase64Ref.current);
-                    pdf.addFont(fontFile, fontName, 'normal');
-                    pdf.setFont(fontName, 'normal');
+                    pdf.addFileToVFS(PDF_FONT_FILE_NAME, pdfFontBase64Ref.current);
+                    pdf.addFont(PDF_FONT_FILE_NAME, PDF_FONT_FAMILY_NAME, 'normal');
+                    pdf.setFont(PDF_FONT_FAMILY_NAME, 'normal');
                     return true;
                 } catch {
                     return false;
@@ -1551,7 +1858,7 @@
                 }
             };
 
-            const renderApplicationToPdf = (pdf, item, index = 1, total = 1) => {
+            const renderApplicationToPdf = async (pdf, item, index = 1, total = 1) => {
                 const pageWidth = pdf.internal.pageSize.getWidth();
                 const pageHeight = pdf.internal.pageSize.getHeight();
                 const marginX = 10;
@@ -1662,8 +1969,10 @@
 
                 const sigImgW = sigBoxW - 4;
                 const sigImgH = 20;
-                const hasApplicantSignature = addDataImageToPdf(pdf, item.signature, sigX1 + 2, y + 7, sigImgW, sigImgH);
-                const hasCheckerSignature = addDataImageToPdf(pdf, item.firstCheckedManagerSignature, sigX2 + 2, y + 7, sigImgW, sigImgH);
+                const applicantSignatureDataUrl = await toPdfImageDataUrl(item.signature);
+                const checkerSignatureDataUrl = await toPdfImageDataUrl(item.firstCheckedManagerSignature);
+                const hasApplicantSignature = addDataImageToPdf(pdf, applicantSignatureDataUrl, sigX1 + 2, y + 7, sigImgW, sigImgH);
+                const hasCheckerSignature = addDataImageToPdf(pdf, checkerSignatureDataUrl, sigX2 + 2, y + 7, sigImgW, sigImgH);
                 if (!hasApplicantSignature) { pdf.setFontSize(8); pdf.text('서명 없음', sigX1 + 2, y + 19); }
                 if (!hasCheckerSignature) { pdf.setFontSize(8); pdf.text('서명 없음', sigX2 + 2, y + 19); }
 
@@ -1707,7 +2016,8 @@
                         imgY += 3;
                         pdf.setDrawColor(229, 231, 235);
                         pdf.rect(marginX, imgY, imageBoxW, imageBoxH);
-                        const ok = addDataImageToPdf(pdf, item.registrationImg, marginX + 1.5, imgY + 1.5, imageBoxW - 3, imageBoxH - 3);
+                        const registrationImgDataUrl = await toPdfImageDataUrl(item.registrationImg);
+                        const ok = addDataImageToPdf(pdf, registrationImgDataUrl, marginX + 1.5, imgY + 1.5, imageBoxW - 3, imageBoxH - 3);
                         if (!ok) { pdf.setFontSize(9); pdf.text('이미지 로드 실패', marginX + 2, imgY + 12); }
                         imgY += imageBoxH + 8;
                     }
@@ -1717,7 +2027,8 @@
                         imgY += 3;
                         pdf.setDrawColor(229, 231, 235);
                         pdf.rect(marginX, imgY, imageBoxW, imageBoxH);
-                        const ok = addDataImageToPdf(pdf, item.idCardImg, marginX + 1.5, imgY + 1.5, imageBoxW - 3, imageBoxH - 3);
+                        const idCardImgDataUrl = await toPdfImageDataUrl(item.idCardImg);
+                        const ok = addDataImageToPdf(pdf, idCardImgDataUrl, marginX + 1.5, imgY + 1.5, imageBoxW - 3, imageBoxH - 3);
                         if (!ok) { pdf.setFontSize(9); pdf.text('이미지 로드 실패', marginX + 2, imgY + 12); }
                     }
                 }
@@ -1727,10 +2038,11 @@
                 const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
                 const fontReady = await ensurePdfFont(pdf);
                 if (!fontReady) throw new Error('PDF_FONT_LOAD_FAILED');
-                items.forEach((item, idx) => {
+                for (let idx = 0; idx < items.length; idx++) {
+                    const item = items[idx];
                     if (idx > 0) pdf.addPage();
-                    renderApplicationToPdf(pdf, item, idx + 1, items.length);
-                });
+                    await renderApplicationToPdf(pdf, item, idx + 1, items.length);
+                }
 
                 const totalPages = pdf.getNumberOfPages();
                 for (let page = 1; page <= totalPages; page++) {
@@ -1780,6 +2092,7 @@
                 await onDeleteSubmissions(Array.from(selectedIds));
                 setSelectedIds(new Set());
                 setExpandedId(null);
+                setOpenLogItemId(null);
             };
 
             const closeFirstCheckModal = () => {
@@ -1962,6 +2275,7 @@
                                     const activityLogs = (Array.isArray(item.activityLogs) ? item.activityLogs : [])
                                         .slice()
                                         .sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0));
+                                    const isLogPanelOpen = openLogItemId === item.id;
 
                                     return (
                                         <div key={item.id} className={`border-b border-slate-100 last:border-0 bg-white ${isSelected ? 'bg-indigo-50/20' : ''} ${isWaitingApproval ? 'border-2 border-indigo-500 z-10 relative' : ''}`}>
@@ -1979,7 +2293,7 @@
                                                 <div className="w-20 text-right text-[10px] text-slate-400 leading-tight shrink-0">{new Date(item.submittedAt).toLocaleDateString().slice(5)}<br/>{new Date(item.submittedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
                                                 <div className="w-6 flex justify-end text-slate-400 shrink-0"><ChevronRight size={16} className={`transition-transform duration-300 ${isExpanded ? 'rotate-90 text-indigo-500' : ''}`}/></div>
                                             </div>
-                                            <div className={`overflow-hidden transition-all duration-300 bg-slate-50 border-t border-slate-100 ${isExpanded ? 'max-h-[1000px] opacity-100' : 'max-h-0 opacity-0'}`}>
+                                            <div className={`transition-all duration-300 bg-slate-50 border-t border-slate-100 ${isExpanded ? 'max-h-none opacity-100 overflow-visible' : 'max-h-0 opacity-0 overflow-hidden'}`}>
                                                 <div className="p-4 space-y-4">
                                                     {isDuplicate && <button onClick={()=> { setTargetCar(item.vehicles[0]); setHistoryList(history); setHistoryOpen(true); }} className="w-full bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 text-xs py-2.5 rounded-lg flex items-center justify-center font-bold transition"><AlertCircle size={14} className="mr-1.5"/> 금일 {count}회 중복 신청 (이력보기)</button>}
                                                     <div className="bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
@@ -2053,19 +2367,32 @@
                                                         {item.status==='rejected' && <div className="mt-2 text-xs text-rose-600 bg-rose-50 p-2 rounded border border-rose-100 font-bold">반려 사유: {item.rejectionReason} ({item.rejectedBy})</div>}
                                                         {activityLogs.length > 0 && (
                                                             <div className="mt-2 pt-2 border-t border-slate-100 px-2">
-                                                                <span className="text-xs text-slate-500 block mb-2 font-bold">처리 이력</span>
-                                                                <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
-                                                                    {activityLogs.map((log, idx) => (
-                                                                        <div key={log.id || `${item.id}-log-${idx}`} className="bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5">
-                                                                            <div className="flex justify-between items-start gap-2">
-                                                                                <span className="text-[11px] font-bold text-slate-700">{log.action || '기록'}</span>
-                                                                                <span className="text-[10px] text-slate-400 shrink-0">{formatDateTimeForDoc(log.at)}</span>
-                                                                            </div>
-                                                                            <div className="text-[11px] text-slate-600 break-keep">{log.detail || '-'}</div>
-                                                                            <div className="text-[10px] text-slate-400 mt-0.5">담당: {log.actor || '-'}</div>
-                                                                        </div>
-                                                                    ))}
+                                                                <div className="flex items-center justify-between gap-2">
+                                                                    <span className="text-xs text-slate-500 font-bold">처리 이력 {activityLogs.length}건</span>
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => toggleLogPanel(item.id)}
+                                                                        className={`text-[11px] px-2.5 py-1 rounded-full border font-bold transition ${isLogPanelOpen ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`}
+                                                                    >
+                                                                        {isLogPanelOpen ? '닫기' : '보기'}
+                                                                    </button>
                                                                 </div>
+                                                                {isLogPanelOpen && (
+                                                                    <div className="mt-2 space-y-2">
+                                                                        <div className="space-y-1.5">
+                                                                            {activityLogs.map((log, idx) => (
+                                                                                <div key={log.id || `${item.id}-log-${idx}`} className="bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5">
+                                                                                    <div className="flex justify-between items-start gap-2">
+                                                                                        <span className="text-[11px] font-bold text-slate-700">{log.action || '기록'}</span>
+                                                                                        <span className="text-[10px] text-slate-400 shrink-0">{formatDateTimeForDoc(log.at)}</span>
+                                                                                    </div>
+                                                                                    <div className="text-[11px] text-slate-600 break-keep">{log.detail || '-'}</div>
+                                                                                    <div className="text-[10px] text-slate-400 mt-0.5">담당: {log.actor || '-'}</div>
+                                                                                </div>
+                                                                            ))}
+                                                                        </div>
+                                                                    </div>
+                                                                )}
                                                             </div>
                                                         )}
                                                     </div>
