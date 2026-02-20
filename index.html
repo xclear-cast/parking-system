@@ -87,7 +87,6 @@
         const ADMIN_SESSION_KEY = 'parking_admin_session_v1';
         const ADMIN_SESSION_DURATION_MS = 24 * 60 * 60 * 1000;
         const STATUS_CHECK_RETENTION = { constructionDays: 1, regularMonths: 1 };
-        const STORAGE_RETENTION = { constructionDays: 7, regularMonths: 1 };
         const FINAL_APPROVER_SIGNATURE_TEXT = '주차관제실';
         const OFFICIAL_FOOTER_TITLE = '강동 아이파크 더 리버몰 주차관제실';
         const OFFICIAL_FOOTER_SUBTITLE = '본 문서는 주차관제실 전자승인 문서입니다.';
@@ -95,21 +94,9 @@
             'https://cdn.jsdelivr.net/gh/google/fonts@main/ofl/nanumgothic/NanumGothic-Regular.ttf',
             'https://raw.githubusercontent.com/googlefonts/nanumgothic/master/fonts/ttf/NanumGothic-Regular.ttf'
         ];
-        // 동기화 백엔드: cloud-only 고정, provider는 placeholder 상태로 유지
-        const DATA_SYNC_MODE = 'cloud-only'; // 'cloud-only'
-        const DATA_SYNC_PROVIDER = 'placeholder'; // 'placeholder' | 'firebase'
+        // 동기화 백엔드: 클라우드 전용
+        const DATA_SYNC_PROVIDER = 'firebase'; // 'firebase' | 'custom'
         const DATA_SYNC_COLLECTION = 'parking_submissions_v1';
-        const PLACEHOLDER_PROVIDER_NOTICE = 'placeholder 작업모드: 새로고침하면 데이터가 초기화됩니다.';
-        const placeholderStore = [];
-        const placeholderSubscribers = new Set();
-        const sortBySubmittedAtDesc = (list) =>
-            [...list].sort((a, b) => new Date(b?.submittedAt || 0) - new Date(a?.submittedAt || 0));
-        const emitPlaceholderStore = () => {
-            const snapshot = sortBySubmittedAtDesc(placeholderStore);
-            placeholderSubscribers.forEach((fn) => {
-                try { fn(snapshot); } catch {}
-            });
-        };
         const DATA_SYNC_CONFIG = {
             firebase: {
                 // TODO: Firebase 콘솔 > 프로젝트 설정 > 웹 앱 구성값으로 채우세요.
@@ -119,43 +106,16 @@
                 storageBucket: '',
                 messagingSenderId: '',
                 appId: ''
+            },
+            custom: {
+                // TODO: 업체 확정 시 createClient에 어댑터 팩토리를 연결하세요.
+                // createClient: async ({ collectionName, config, allConfig }) => ({ subscribe, upsert, removeMany })
+                createClient: null
             }
         };
         const hasFirebaseConfig = (config) =>
             Boolean(config?.apiKey && config?.projectId && config?.appId);
-        const createCloudSyncClient = async () => {
-            if (DATA_SYNC_PROVIDER === 'placeholder') {
-                return {
-                    provider: 'placeholder',
-                    subscribe: (onData) => {
-                        if (typeof onData !== 'function') return () => {};
-                        placeholderSubscribers.add(onData);
-                        onData(sortBySubmittedAtDesc(placeholderStore));
-                        return () => placeholderSubscribers.delete(onData);
-                    },
-                    upsert: async (item) => {
-                        if (!item?.id) return;
-                        const idx = placeholderStore.findIndex((row) => row.id === item.id);
-                        if (idx >= 0) {
-                            placeholderStore[idx] = { ...item, id: item.id };
-                        } else {
-                            placeholderStore.push({ ...item, id: item.id });
-                        }
-                        emitPlaceholderStore();
-                    },
-                    removeMany: async (ids) => {
-                        const idSet = new Set(Array.isArray(ids) ? ids.filter(Boolean) : []);
-                        if (idSet.size === 0) return;
-                        const next = placeholderStore.filter((row) => !idSet.has(row.id));
-                        placeholderStore.length = 0;
-                        placeholderStore.push(...next);
-                        emitPlaceholderStore();
-                    }
-                };
-            }
-            if (DATA_SYNC_PROVIDER !== 'firebase') {
-                throw new Error(`UNSUPPORTED_SYNC_PROVIDER:${DATA_SYNC_PROVIDER}`);
-            }
+        const createFirebaseSyncClient = async () => {
             const firebaseConfig = DATA_SYNC_CONFIG.firebase || {};
             if (!hasFirebaseConfig(firebaseConfig)) {
                 throw new Error('FIREBASE_CONFIG_MISSING');
@@ -202,6 +162,38 @@
                     await batch.commit();
                 }
             };
+        };
+        const createCustomSyncClient = async () => {
+            const customConfig = DATA_SYNC_CONFIG.custom || {};
+            if (typeof customConfig.createClient !== 'function') {
+                throw new Error('CUSTOM_PROVIDER_FACTORY_MISSING');
+            }
+            const client = await customConfig.createClient({
+                collectionName: DATA_SYNC_COLLECTION,
+                config: customConfig,
+                allConfig: DATA_SYNC_CONFIG
+            });
+            const isValidClient = Boolean(
+                client &&
+                typeof client.subscribe === 'function' &&
+                typeof client.upsert === 'function' &&
+                typeof client.removeMany === 'function'
+            );
+            if (!isValidClient) {
+                throw new Error('CUSTOM_PROVIDER_INVALID_CLIENT');
+            }
+            return { ...client, provider: client.provider || 'custom' };
+        };
+        const CLOUD_SYNC_PROVIDER_FACTORIES = {
+            firebase: createFirebaseSyncClient,
+            custom: createCustomSyncClient
+        };
+        const createCloudSyncClient = async () => {
+            const factory = CLOUD_SYNC_PROVIDER_FACTORIES[DATA_SYNC_PROVIDER];
+            if (typeof factory !== 'function') {
+                throw new Error(`UNSUPPORTED_SYNC_PROVIDER:${DATA_SYNC_PROVIDER}`);
+            }
+            return await factory();
         };
         
         // --- 권한 및 상태 정의 ---
@@ -254,6 +246,20 @@
             const today = new Date();
             return `${today.getFullYear()}년 ${String(today.getMonth() + 1).padStart(2, '0')}월 ${String(today.getDate()).padStart(2, '0')}일`;
         };
+        const getLocalDateString = (date = new Date()) => {
+            const d = date instanceof Date ? date : new Date(date);
+            const year = d.getFullYear();
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        };
+        const getLocalTimeString = (date = new Date()) => {
+            const d = date instanceof Date ? date : new Date(date);
+            const hour = String(d.getHours()).padStart(2, '0');
+            const minute = String(d.getMinutes()).padStart(2, '0');
+            return `${hour}:${minute}`;
+        };
+        const maxTimeString = (a = '00:00', b = '00:00') => (a > b ? a : b);
 
         const sanitizeCarNumberInput = (value) =>
             (value || '')
@@ -542,7 +548,6 @@
             const [syncErrorMessage, setSyncErrorMessage] = useState('');
             const previousSubmissionListRef = useRef([]);
             const hasInitialSubmissionSyncRef = useRef(false);
-            const isCloudOnlyMode = DATA_SYNC_MODE === 'cloud-only';
             const isCloudSyncEnabled = Boolean(cloudSyncClient);
 
             const isValidRoleId = (roleId) => Object.values(ROLES).some((role) => role.id === roleId);
@@ -596,14 +601,10 @@
                 ...(grouped?.construction || []),
                 ...(grouped?.regular || [])
             ];
-            const toPrunedSubmissionList = (items) => {
-                const source = Array.isArray(items) ? items : [];
-                return pruneSubmissionsByRetention(source, STORAGE_RETENTION);
-            };
             const applySubmissionList = (items) => {
-                const pruned = toPrunedSubmissionList(items);
-                setSubmissions(toSubmissionGroups(pruned));
-                return pruned;
+                const source = Array.isArray(items) ? items : [];
+                setSubmissions(toSubmissionGroups(source));
+                return source;
             };
             const ensureCloudSyncAvailable = (actionLabel = '작업') => {
                 if (!isCloudSyncEnabled || !cloudSyncClient) {
@@ -690,10 +691,17 @@
                         console.error('동기화 백엔드 초기화 실패:', error);
                         if (!isMounted) return;
                         setCloudSyncClient(null);
-                        if (error?.message === 'FIREBASE_CONFIG_MISSING') {
+                        const errorMessage = error?.message || '';
+                        if (errorMessage === 'FIREBASE_CONFIG_MISSING') {
                             setSyncErrorMessage('Firebase 설정값이 비어 있습니다.\n프로젝트 설정값 입력 후 새로고침하세요.');
+                        } else if (errorMessage === 'CUSTOM_PROVIDER_FACTORY_MISSING') {
+                            setSyncErrorMessage('커스텀 provider 팩토리가 연결되지 않았습니다.\nDATA_SYNC_CONFIG.custom.createClient를 설정하세요.');
+                        } else if (errorMessage === 'CUSTOM_PROVIDER_INVALID_CLIENT') {
+                            setSyncErrorMessage('커스텀 provider 클라이언트 형식이 올바르지 않습니다.\nsubscribe/upsert/removeMany 함수를 확인하세요.');
+                        } else if (errorMessage.startsWith('UNSUPPORTED_SYNC_PROVIDER:')) {
+                            setSyncErrorMessage(`지원하지 않는 provider입니다.\n현재 설정: ${DATA_SYNC_PROVIDER}`);
                         } else {
-                            setSyncErrorMessage('클라우드 연결 초기화에 실패했습니다.\n설정 확인 후 새로고침하세요.');
+                            setSyncErrorMessage(`클라우드 연결 초기화에 실패했습니다.\nprovider: ${DATA_SYNC_PROVIDER}\n설정 확인 후 새로고침하세요.`);
                         }
                         setIsSyncBackendReady(true);
                     });
@@ -956,6 +964,25 @@
                     alert(`필수 입력 항목이 누락되었습니다.\n- ${labels.join('\n- ')}`);
                     return { ok: false, missingFields: missingRequiredFields };
                 }
+                if (type === 'construction') {
+                    const now = new Date();
+                    now.setSeconds(0, 0);
+                    const startAt = new Date(`${cleanData.startDate}T${cleanData.startTime || '00:00'}`);
+                    const endAt = new Date(`${cleanData.endDate}T${cleanData.endTime || '23:59'}`);
+
+                    if (!Number.isNaN(startAt.getTime()) && startAt < now) {
+                        alert('방문 시작일시는 현재 시각 이후로 설정해주세요.');
+                        return { ok: false, invalidVisitTime: true };
+                    }
+                    if (!Number.isNaN(endAt.getTime()) && endAt < now) {
+                        alert('방문 종료일시는 현재 시각 이후로 설정해주세요.');
+                        return { ok: false, invalidVisitTime: true };
+                    }
+                    if (!Number.isNaN(startAt.getTime()) && !Number.isNaN(endAt.getTime()) && startAt > endAt) {
+                        alert('방문 종료일시는 시작일시 이후로 설정해주세요.');
+                        return { ok: false, invalidVisitTime: true };
+                    }
+                }
                 const requestTypeLabel = type === 'construction' ? '공사/방문' : '정기권';
                 const receptionLabel = cleanData.receptionType === 'proxy'
                     ? `대리접수 (${cleanData.receptionDesk || '관리자'}${cleanData.proxySubmitterName ? ` / ${cleanData.proxySubmitterName}` : ''})`
@@ -1157,7 +1184,7 @@
                     }} />;
                     case 'regular': return <RegularTicketForm onBack={() => setCurrentView('home')} userRole={adminRole} onSubmit={async (data) => {
                         if (data.applicationType !== 'change') {
-                            const check = checkTimeOverlap({...data, startDate: new Date().toISOString().split('T')[0], endDate: '2099-12-31'}, 'regular');
+                            const check = checkTimeOverlap({...data, startDate: getLocalDateString(), endDate: '2099-12-31'}, 'regular');
                             if (check.isOverlap) { alert(`[중복] 차량 ${check.car}는 이미 등록되어 있습니다.`); return { ok: false }; }
                         }
                         return await handleSave('regular', data, false);
@@ -1182,7 +1209,7 @@
                 );
             }
 
-            if (isCloudOnlyMode && !isCloudSyncEnabled) {
+            if (!isCloudSyncEnabled) {
                 return (
                     <div className="h-full w-full flex items-center justify-center px-6 bg-slate-50">
                         <div className="w-full max-w-sm rounded-2xl border border-rose-200 bg-white p-5 text-center shadow-sm">
@@ -1201,11 +1228,6 @@
 
             return (
                 <div className="flex flex-col h-full bg-slate-50 relative">
-                    {DATA_SYNC_PROVIDER === 'placeholder' && (
-                        <div className="px-4 py-2 bg-amber-50 border-b border-amber-200 text-[12px] font-semibold text-amber-700 text-center">
-                            {PLACEHOLDER_PROVIDER_NOTICE}
-                        </div>
-                    )}
                     <header className="bg-slate-900 text-white px-4 sm:px-5 py-3 sm:py-4 shrink-0 z-10 shadow-lg safe-area-top">
                         <div className="flex items-center justify-between gap-2">
                             <div className="flex items-center gap-2.5 min-w-0">
@@ -1464,12 +1486,12 @@
                     targetList.forEach(i => i.vehicles.forEach(v => { if(v.trim()) ws_data.push([getStatusLabel(i.status), v, i.companyName, i.visitorName, i.startDate, i.startTime, i.endDate, i.endTime, i.driverPhone, `[${i.visitPurpose}] ${i.location}`, i.visitUnit, i.checkedBy||'-', i.approvedBy||'-']) }));
                 } else {
                     ws_data.push(["상태","차량번호","시작일","종료일","사용자명","연락처","부서","호수","메모","1차확인자","최종승인자"]);
-                    const today = new Date().toISOString().split('T')[0];
+                    const today = getLocalDateString();
                     targetList.forEach(i => ws_data.push([getStatusLabel(i.status), i.carNumber, today, "2099-12-31", i.name, i.phone, i.department, i.unitNumber, i.applicationType, i.checkedBy||'-', i.approvedBy||'-']));
                 }
                 const wb = window.XLSX.utils.book_new();
                 window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.aoa_to_sheet(ws_data), "Sheet1");
-                window.XLSX.writeFile(wb, `주차관제_${activeTab}_${new Date().toISOString().slice(0,10)}.xlsx`);
+                window.XLSX.writeFile(wb, `주차관제_${activeTab}_${getLocalDateString()}.xlsx`);
             };
 
             const formatDateTimeForDoc = (value) => {
@@ -1736,7 +1758,7 @@
                 if (targetList.length === 0) return alert("다운로드할 데이터가 없습니다.");
                 setIsZipping(true);
                 try {
-                    const ymd = new Date().toISOString().slice(0,10);
+                    const ymd = getLocalDateString();
                     const bundlePdf = await buildBundledApplicationsPdf(targetList);
                     const url = window.URL.createObjectURL(new Blob([bundlePdf], { type: 'application/pdf' }));
                     const a = document.createElement("a"); a.href = url; a.download = `parking_bundle_${activeTab}_${ymd}.pdf`; a.click();
@@ -2305,10 +2327,24 @@
             const receptionRoleName = userRole ? getRoleNameById(userRole) : '';
             const [visitPurpose, setVisitPurpose] = useState(allowedPurposes[0]);
             const createEmptyConstructionForm = () => {
-                const today = new Date().toISOString().split('T')[0];
-                return { companyName:'', visitorName:'', visitUnit:'', location:'', driverPhone:'', startDate: today, endDate: today, startTime:'09:00', endTime:'18:00', vehicles:[''], signature: null, proxySubmitterName: '' };
+                const today = getLocalDateString();
+                const now = new Date();
+                now.setSeconds(0, 0);
+                const plus1Hour = new Date(now.getTime() + (60 * 60 * 1000));
+                const endTime = getLocalDateString(plus1Hour) === today ? getLocalTimeString(plus1Hour) : '23:59';
+                return { companyName:'', visitorName:'', visitUnit:'', location:'', driverPhone:'', startDate: today, endDate: today, startTime:getLocalTimeString(now), endTime, vehicles:[''], signature: null, proxySubmitterName: '' };
             };
             const [formData, setFormData] = useState(() => createEmptyConstructionForm());
+            const now = new Date();
+            now.setSeconds(0, 0);
+            const currentDate = getLocalDateString(now);
+            const currentTime = getLocalTimeString(now);
+            const minStartDate = currentDate;
+            const minEndDate = formData.startDate && formData.startDate > currentDate ? formData.startDate : currentDate;
+            const minStartTime = formData.startDate === currentDate ? currentTime : '00:00';
+            const minEndTimeByNow = formData.endDate === currentDate ? currentTime : '00:00';
+            const minEndTimeByStart = formData.startDate === formData.endDate ? (formData.startTime || '00:00') : '00:00';
+            const minEndTime = maxTimeString(minEndTimeByNow, minEndTimeByStart);
             
             useEffect(() => { 
                 if(initialData) { 
@@ -2375,7 +2411,8 @@
                                             required
                                             className="w-full min-w-0 px-2.5 py-2.5 pr-8 border rounded-xl text-[13px] sm:text-sm bg-white font-medium"
                                             value={formData.startDate}
-                                            onChange={e=>{const v=e.target.value; setFormData(p=>({...p, startDate:v, endDate: visitPurpose==='부동산'?v:p.endDate}))}}
+                                            min={minStartDate}
+                                            onChange={e=>{const v=e.target.value; setFormData(p=>({...p, startDate:v, endDate: (visitPurpose==='부동산' || p.endDate < v)?v:p.endDate}))}}
                                         />
                                     </div>
                                     <div className="min-w-0">
@@ -2385,6 +2422,7 @@
                                             required
                                             className="w-full min-w-0 px-2.5 py-2.5 pr-8 border rounded-xl text-[13px] sm:text-sm bg-white font-medium"
                                             value={formData.startTime}
+                                            min={minStartTime}
                                             onChange={e=>setFormData({...formData, startTime:e.target.value})}
                                         />
                                     </div>
@@ -2397,6 +2435,7 @@
                                             required
                                             className="w-full min-w-0 px-2.5 py-2.5 pr-8 border rounded-xl text-[13px] sm:text-sm bg-white font-medium disabled:bg-slate-100"
                                             value={formData.endDate}
+                                            min={minEndDate}
                                             onChange={e=>setFormData({...formData, endDate:e.target.value})}
                                             disabled={visitPurpose==='부동산'}
                                         />
@@ -2408,6 +2447,7 @@
                                             required
                                             className="w-full min-w-0 px-2.5 py-2.5 pr-8 border rounded-xl text-[13px] sm:text-sm bg-white font-medium disabled:bg-slate-100"
                                             value={formData.endTime}
+                                            min={minEndTime}
                                             onChange={e=>setFormData({...formData, endTime:e.target.value})}
                                             disabled={visitPurpose==='부동산'}
                                         />
